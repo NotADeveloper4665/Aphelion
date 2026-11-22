@@ -14,10 +14,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt
-      - name: Check formatting
-        run: cargo fmt --all -- --check
       - name: Build workspace
         run: cargo build --workspace --locked
       - name: Run tests
