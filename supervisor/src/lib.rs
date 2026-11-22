@@ -75,21 +75,26 @@ impl SessionRegistry {
         if message.kind != "event" {
             return Err("session lifecycle message must be an event");
         }
-        let session_id = message.session_id.as_deref()
-            .filter(|id| !id.trim().is_empty())
-            .ok_or("session lifecycle event requires a non-empty session_id")?
-            .to_owned();
         match message.message_type.as_str() {
             "session.started" => {
+                let session_id = Self::session_id(message)?;
                 let newly_active = self.active.insert(session_id.clone());
                 Ok(Some(SessionTransition::Started { session_id, newly_active }))
             }
             "session.stopped" => {
+                let session_id = Self::session_id(message)?;
                 let was_active = self.active.remove(&session_id);
                 Ok(Some(SessionTransition::Stopped { session_id, was_active }))
             }
             _ => Ok(None),
         }
+    }
+
+    fn session_id(message: &Message) -> Result<String, &'static str> {
+        message.session_id.as_deref()
+            .filter(|id| !id.trim().is_empty())
+            .map(str::to_owned)
+            .ok_or("session lifecycle event requires a non-empty session_id")
     }
 
     pub fn is_active(&self, session_id: &str) -> bool {
@@ -319,7 +324,7 @@ mod tests {
     #[test]
     fn session_registry_tracks_worker_events_idempotently() {
         let mut sessions = SessionRegistry::default();
-        let event = |kind, session_id| Message::new(
+        let event = |kind: &str, session_id: &str| Message::new(
             "event", kind, "worker-a", 3, None, Some(session_id.to_owned()), json!({}));
 
         let started = sessions.apply_event(&event("session.started", "session-a"))

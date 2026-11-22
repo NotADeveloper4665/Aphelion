@@ -1,4 +1,4 @@
-use aphelion_supervisor::{message_identity_matches, missing_required_capabilities, protocol_version_supported, Message, RestartPolicy, SessionRegistry, SessionTransition, SessionIntent, VideoCodec, VideoIntent, PROTOCOL_MAJOR, PROTOCOL_MINOR, MAX_MESSAGE_BYTES};
+use aphelion_supervisor::{message_identity_matches, missing_required_capabilities, protocol_version_supported, Message, RestartPolicy, SessionRegistry, SessionIntent, VideoCodec, VideoIntent, PROTOCOL_MAJOR, PROTOCOL_MINOR, MAX_MESSAGE_BYTES};
 use serde_json::json;
 use std::{env, os::unix::fs::PermissionsExt, process::Stdio, time::Duration};
 use nix::{sys::signal::{kill, Signal}, unistd::Pid};
@@ -149,7 +149,7 @@ async fn run_demo(
     let shutdown = Message::new("request", "worker.shutdown", worker_id, generation,
         Some(shutdown_id.clone()), None, json!({"reason": "prototype_complete"}));
     send_message(&mut write, &shutdown).await?;
-    let acknowledgement = read_correlated_response(&mut reader, worker_id, generation, &shutdown_id, "worker.shutdown", &mut sessions).await?;
+    let _acknowledgement = read_correlated_response(&mut reader, worker_id, generation, &shutdown_id, "worker.shutdown", &mut sessions).await?;
     println!("supervisor: shutdown acknowledged; waiting for child exit");
     drop(write);
     drop(reader);
