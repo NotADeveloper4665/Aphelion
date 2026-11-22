@@ -178,4 +178,36 @@ mod tests {
         assert!(args.iter().any(|arg| arg == "video/x-raw,format=BGRA,width=1920,height=1080,framerate=60/1"));
         assert!(!args.iter().any(|arg| arg.contains("device=")));
     }
+
+    #[cfg(unix)]
+    fn fixture_program(script: &str) -> String {
+        use std::os::unix::fs::PermissionsExt;
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!("aphelion-capture-fixture-{}-{id}.sh", std::process::id()));
+        std::fs::write(&path, format!("#!/bin/sh\n{script}\n")).unwrap();
+        let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&path, permissions).unwrap();
+        path.to_string_lossy().into_owned()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reads_complete_bgra_frames_and_reports_truncated_output() {
+        let config = CaptureConfig { node_id: 8, width: 1, height: 1, frames_per_second: 30 };
+        let complete_program = fixture_program("printf ABCD");
+        let mut capture = PipeWireCapture::spawn_with_program(config, &complete_program).unwrap();
+        let frame = capture.next_frame().unwrap();
+        assert_eq!(frame.bgra.as_slice(), b"ABCD");
+        assert_eq!((frame.width, frame.height), (1, 1));
+        let _ = capture.stop();
+        std::fs::remove_file(complete_program).unwrap();
+
+        let truncated_program = fixture_program("printf AB");
+        let mut capture = PipeWireCapture::spawn_with_program(config, &truncated_program).unwrap();
+        assert!(matches!(capture.next_frame(), Err(CaptureError::TruncatedFrame { expected: 4, received: 2 })));
+        drop(capture);
+        std::fs::remove_file(truncated_program).unwrap();
+    }
 }
