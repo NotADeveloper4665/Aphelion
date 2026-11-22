@@ -94,6 +94,6 @@ On worker or device failure, stop admitting work, release queued frames and GPU 
 1. Architecture and philosophy documents; bounded RTSP parser; generic Reed-Solomon block encoder; video AES-GCM envelope primitive.
 2. Portal-authorized PipeWire/GStreamer BGRA capture and low-latency software H.264 encoding adapters, with explicit timestamps and bounded encoder output.
 3. Conservative RTSP session ordering, CSeq correlation, and duplicate replay; pairing, authentication, SDP capability parsing, and key derivation remain open.
-4. Moonlight frame packet layout and FEC metadata, tested with differential golden vectors against the pinned compatibility baseline.
-5. Complete authenticated session and UDP stream association; then join capture, encoding, packetization, FEC, encryption, and socket lifecycle in the Rust worker.
+4. Moonlight RTP/NV_VIDEO_PACKET data-shard framing and UDP send are implemented in no-parity mode; next add Moonlight's FEC prefix/parity layout with differential golden vectors.
+5. Complete authenticated session and negotiated UDP stream association; then join capture, encoding, packetization, FEC, encryption, and socket lifecycle in the Rust worker.
 6. Add hardware encoders and zero-copy buffers only after capability and ownership tests; run hardware/client acceptance before defaulting to the Rust path.

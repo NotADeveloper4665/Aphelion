@@ -6,6 +6,8 @@
 //! generic Reed-Solomon encoding exists in [`crate::fec`] but parity headers and recovery
 //! behavior must be differentially validated before this module emits parity packets.
 
+use std::{io, net::{SocketAddr, UdpSocket}};
+
 use crate::crypto::{CryptoError, MoonlightVideoCipher, MOONLIGHT_VIDEO_PREFIX_BYTES};
 
 const RTP_HEADER_BYTES: usize = 12;
@@ -19,6 +21,7 @@ const MAX_DATAGRAM_BYTES: usize = 65_507;
 pub enum MoonlightPacketError {
     PacketSizeOutOfRange(usize),
     TooManyBlocks(usize),
+    MultiBlockUnsupported,
     EmptyAccessUnit,
     EmptyNalUnit,
     InvalidNalHeader,
@@ -31,6 +34,7 @@ impl std::fmt::Display for MoonlightPacketError {
         match self {
             Self::PacketSizeOutOfRange(value) => write!(f, "Moonlight shard size {value} is outside the supported range"),
             Self::TooManyBlocks(value) => write!(f, "Moonlight frame requires {value} FEC blocks; maximum is {MAX_FEC_BLOCKS}"),
+            Self::MultiBlockUnsupported => f.write_str("the negotiated Moonlight client does not support multi-block video frames"),
             Self::EmptyAccessUnit => f.write_str("H.264 access unit contains no NAL units"),
             Self::EmptyNalUnit => f.write_str("H.264 NAL unit is empty"),
             Self::InvalidNalHeader => f.write_str("H.264 NAL unit has an invalid forbidden_zero_bit or type"),
@@ -52,10 +56,12 @@ pub struct MoonlightVideoConfig {
     pub shard_size: usize,
     pub initial_sequence: u16,
     pub ssrc: u32,
+    /// Set only when the negotiated client advertises multi-FEC block support.
+    pub multi_fec_supported: bool,
 }
 
 impl Default for MoonlightVideoConfig {
-    fn default() -> Self { Self { shard_size: 1200, initial_sequence: 0, ssrc: 0 } }
+    fn default() -> Self { Self { shard_size: 1200, initial_sequence: 0, ssrc: 0, multi_fec_supported: false } }
 }
 
 /// Packetizes one encoded H.264 access unit into Moonlight video datagrams.
@@ -66,6 +72,72 @@ impl Default for MoonlightVideoConfig {
 pub struct MoonlightVideoPacketizer {
     config: MoonlightVideoConfig,
     next_sequence: u16,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct MoonlightSendStats {
+    pub packets: usize,
+    pub bytes: usize,
+}
+
+#[derive(Debug)]
+pub enum MoonlightSendError {
+    Packetize(MoonlightPacketError),
+    Io(io::Error),
+    PartialDatagram { expected: usize, sent: usize },
+}
+
+impl std::fmt::Display for MoonlightSendError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Packetize(error) => write!(f, "cannot packetize Moonlight video frame: {error}"),
+            Self::Io(error) => write!(f, "cannot send Moonlight video datagram: {error}"),
+            Self::PartialDatagram { expected, sent } => write!(f, "UDP send accepted {sent} of {expected} datagram bytes"),
+        }
+    }
+}
+
+impl std::error::Error for MoonlightSendError {}
+
+/// UDP delivery for already-negotiated video peer details. RTSP/UDP port negotiation
+/// remains the caller's responsibility; no media is sent over control IPC.
+pub struct MoonlightUdpSender {
+    socket: UdpSocket,
+    destination: SocketAddr,
+    packetizer: MoonlightVideoPacketizer,
+    cipher: Option<MoonlightVideoCipher>,
+}
+
+impl MoonlightUdpSender {
+    pub fn bind(
+        local: SocketAddr,
+        destination: SocketAddr,
+        config: MoonlightVideoConfig,
+        cipher: Option<MoonlightVideoCipher>,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        Ok(Self { socket: UdpSocket::bind(local)?, destination, packetizer: MoonlightVideoPacketizer::new(config)?, cipher })
+    }
+
+    pub fn send_access_unit(
+        &mut self,
+        frame_index: u32,
+        timestamp_90khz: u32,
+        idr: bool,
+        processing_latency_tenths_ms: u16,
+        nals: &[&[u8]],
+    ) -> Result<MoonlightSendStats, MoonlightSendError> {
+        let packets = self.packetizer.packetize(
+            frame_index, timestamp_90khz, idr, processing_latency_tenths_ms, nals, self.cipher.as_mut(),
+        ).map_err(MoonlightSendError::Packetize)?;
+        let mut stats = MoonlightSendStats::default();
+        for packet in packets {
+            let sent = self.socket.send_to(&packet, self.destination).map_err(MoonlightSendError::Io)?;
+            if sent != packet.len() { return Err(MoonlightSendError::PartialDatagram { expected: packet.len(), sent }); }
+            stats.packets += 1;
+            stats.bytes += sent;
+        }
+        Ok(stats)
+    }
 }
 
 impl MoonlightVideoPacketizer {
@@ -103,6 +175,7 @@ impl MoonlightVideoPacketizer {
         let total_shards = frame_data_size.div_ceil(shard_payload_size);
         let block_count = total_shards.div_ceil(MAX_DATA_SHARDS_PER_BLOCK);
         if block_count > MAX_FEC_BLOCKS { return Err(MoonlightPacketError::TooManyBlocks(block_count)); }
+        if block_count > 1 && !self.config.multi_fec_supported { return Err(MoonlightPacketError::MultiBlockUnsupported); }
         let last_payload_len = frame_data_size % shard_payload_size;
         let last_payload_len = if last_payload_len == 0 { shard_payload_size } else { last_payload_len };
 
@@ -114,7 +187,7 @@ impl MoonlightVideoPacketizer {
         frame_data.extend_from_slice(&[0, 0]);
         frame_data.extend_from_slice(&encoded);
 
-        let last_block_index = (block_count - 1) as u8;
+        let last_block_index = if self.config.multi_fec_supported { (block_count - 1) as u8 } else { 0 };
         let mut packets = Vec::with_capacity(total_shards);
         let mut frame_offset = 0;
         let mut frame_packet_index = 0usize;
@@ -178,7 +251,7 @@ mod tests {
 
     #[test]
     fn emits_moonlight_rtp_extension_frame_metadata_and_short_header() {
-        let mut packetizer = MoonlightVideoPacketizer::new(MoonlightVideoConfig { shard_size: 64, initial_sequence: 9, ssrc: 0x11223344 }).unwrap();
+        let mut packetizer = MoonlightVideoPacketizer::new(MoonlightVideoConfig { shard_size: 64, initial_sequence: 9, ssrc: 0x11223344, multi_fec_supported: false }).unwrap();
         let packets = packetizer.packetize(7, 0x01020304, true, 42, &[&[0x65, 0xaa, 0xbb]], None).unwrap();
         assert_eq!(packets.len(), 1);
         let packet = &packets[0];
@@ -197,7 +270,7 @@ mod tests {
 
     #[test]
     fn splits_large_frames_into_bounded_multi_fec_blocks() {
-        let mut packetizer = MoonlightVideoPacketizer::new(MoonlightVideoConfig { shard_size: 64, initial_sequence: u16::MAX - 1, ssrc: 0 }).unwrap();
+        let mut packetizer = MoonlightVideoPacketizer::new(MoonlightVideoConfig { shard_size: 64, initial_sequence: u16::MAX - 1, ssrc: 0, multi_fec_supported: true }).unwrap();
         let nal = vec![0x41; 32 * 260];
         let packets = packetizer.packetize(4, 0, false, 0, &[&nal], None).unwrap();
         assert!(packets.len() > MAX_DATA_SHARDS_PER_BLOCK);
@@ -224,5 +297,29 @@ mod tests {
         let mut packetizer = MoonlightVideoPacketizer::new(MoonlightVideoConfig { shard_size: 33, ..MoonlightVideoConfig::default() }).unwrap();
         let too_large = vec![0x41; 33 * 255 * 4];
         assert!(matches!(packetizer.packetize(0, 0, false, 0, &[&too_large], None), Err(MoonlightPacketError::TooManyBlocks(_))));
+    }
+
+    #[test]
+    fn refuses_multiblock_frames_when_client_capability_is_unknown_or_absent() {
+        let mut packetizer = MoonlightVideoPacketizer::new(MoonlightVideoConfig { shard_size: 64, ..MoonlightVideoConfig::default() }).unwrap();
+        let nal = vec![0x41; 32 * 260];
+        assert_eq!(packetizer.packetize(0, 0, false, 0, &[&nal], None).unwrap_err(), MoonlightPacketError::MultiBlockUnsupported);
+    }
+
+    #[test]
+    fn sends_framed_video_datagrams_to_negotiated_udp_peer() {
+        let receiver = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        receiver.set_read_timeout(Some(std::time::Duration::from_secs(1))).unwrap();
+        let mut sender = MoonlightUdpSender::bind(
+            "127.0.0.1:0".parse().unwrap(), receiver.local_addr().unwrap(),
+            MoonlightVideoConfig { shard_size: 64, ..MoonlightVideoConfig::default() }, None,
+        ).unwrap();
+        let stats = sender.send_access_unit(1, 900, true, 0, &[&[0x65, 1, 2]]).unwrap();
+        assert_eq!(stats.packets, 1);
+        let mut packet = [0; 128];
+        let (bytes, _) = receiver.recv_from(&mut packet).unwrap();
+        assert_eq!(bytes, 64);
+        assert_eq!(&packet[..2], &[0x90, 96]);
+        assert_eq!(&packet[20..24], &[1, 0, 0, 0]);
     }
 }
