@@ -25,6 +25,7 @@ This does not modify Syzygy or implement media streaming. The worker is still a 
 - [Initial Syzygy inheritance audit](docs/SYZYGY-INHERITANCE-AUDIT.md) — observed capture, encoding, audio, session, and network ownership in the current Syzygy source.
 - [Licensing and attribution audit](docs/LICENSING-AND-ATTRIBUTION-AUDIT.md) — initial GPL and dependency findings; not a complete dependency audit.
 - [Source ownership and lifecycle audit](docs/SYZYGY-OWNERSHIP-AND-LIFECYCLE-AUDIT.md) — Linux input, display capture, GPU resources, and audio ownership at a pinned Syzygy commit.
+- [Syzygy worker adapter boundary](docs/SYZYGY-WORKER-ADAPTER.md) — verified launch semantics, process-tree ownership, session identity limits, and integration tests required before connecting a real worker.
 - [Milestone 0 test plan](docs/MILESTONE-0-TEST-PLAN.md) — baseline, compatibility, hardware, lifecycle, and performance verification required before media-path implementation.
 - [Milestone 0 baseline results](docs/MILESTONE-0-BASELINE-RESULTS.md) — recorded CI evidence for pinned Syzygy commit `c50d417`, including passed checks and remaining gaps.
 

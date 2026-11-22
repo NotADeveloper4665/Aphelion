@@ -56,6 +56,8 @@ This schema describes a request contract only; the mock does not capture or stre
 - Retries older than the bounded cache window may be processed again. Session operations remain idempotent across distinct request IDs: starting an active session returns `created: false`; stopping an inactive session returns `was_active: false`.
 - The cache is in-memory and is discarded when the worker exits. It does not provide crash-safe exactly-once execution or restore desired sessions after a restart.
 
+For the source-backed real-worker integration boundary, see [Syzygy worker adapter](SYZYGY-WORKER-ADAPTER.md).
+
 ## Deliberate prototype limits
 
 - One worker and one demonstration session per run.
