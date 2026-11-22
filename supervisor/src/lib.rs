@@ -52,3 +52,54 @@ impl Message {
         }
     }
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn message_uses_versioned_wire_envelope() {
+        let message = Message::new(
+            "request",
+            "session.start",
+            "worker-a",
+            3,
+            Some("request-a".to_owned()),
+            Some("session-a".to_owned()),
+            json!({"audio_enabled": false}),
+        );
+
+        let encoded = serde_json::to_value(&message).expect("message should serialize");
+        assert_eq!(encoded["protocol"]["major"], PROTOCOL_MAJOR);
+        assert_eq!(encoded["protocol"]["minor"], PROTOCOL_MINOR);
+        assert_eq!(encoded["kind"], "request");
+        assert_eq!(encoded["type"], "session.start");
+        assert!(encoded.get("message_type").is_none());
+        assert_eq!(encoded["worker_instance_id"], "worker-a");
+        assert_eq!(encoded["worker_generation"], 3);
+        assert_eq!(encoded["session_id"], "session-a");
+
+        let decoded: Message =
+            serde_json::from_value(encoded).expect("message should deserialize");
+        assert_eq!(decoded.message_type, "session.start");
+        assert_eq!(decoded.request_id.as_deref(), Some("request-a"));
+    }
+
+    #[test]
+    fn worker_scoped_message_omits_session_identity() {
+        let message = Message::new(
+            "request",
+            "worker.health",
+            "worker-a",
+            1,
+            Some("request-b".to_owned()),
+            None,
+            json!({}),
+        );
+
+        let encoded = serde_json::to_value(message).expect("message should serialize");
+        assert!(encoded.get("session_id").is_none());
+    }
+}
