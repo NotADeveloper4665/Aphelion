@@ -28,15 +28,21 @@ async fn main() -> Result<()> {
     }
 
     let policy = RestartPolicy::default();
+    let inject_first_worker_crash = env::var_os("APHELION_TEST_CRASH_FIRST_WORKER").is_some();
     let mut generation = 1_u64;
     let mut restarts = 0_u32;
     loop {
         let worker_id = Uuid::new_v4().to_string();
         println!("supervisor: starting worker generation {generation} ({worker_id})");
-        let mut child = Command::new(&worker_executable)
+        let mut command = Command::new(&worker_executable);
+        command
             .arg("--socket").arg(&socket_path)
             .arg("--worker-id").arg(&worker_id)
-            .arg("--generation").arg(generation.to_string())
+            .arg("--generation").arg(generation.to_string());
+        if inject_first_worker_crash && restarts == 0 {
+            command.arg("--crash-on-start");
+        }
+        let mut child = command
             .stdin(Stdio::null())
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit())

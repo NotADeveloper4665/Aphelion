@@ -20,3 +20,16 @@ jobs:
         run: cargo test --workspace
       - name: Run supervisor-worker IPC smoke test
         run: ./target/debug/supervisor
+      - name: Verify restart after an injected worker crash
+        shell: bash
+        run: |
+          set -euo pipefail
+          output="$(APHELION_TEST_CRASH_FIRST_WORKER=1 ./target/debug/supervisor 2>&1)" || {
+            printf '%s\n' "$output"
+            exit 1
+          }
+          printf '%s\n' "$output"
+          grep -Fq "injected failure during session.start" <<<"$output"
+          grep -Fq "retry 1/3" <<<"$output"
+          grep -Fq "starting worker generation 2" <<<"$output"
+          grep -Fq "worker generation 2 exited with exit status: 0" <<<"$output"

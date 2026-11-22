@@ -9,7 +9,8 @@ This prototype proves a narrow Milestone 1 slice without modifying or building S
 - the worker connects back and identifies its instance and generation;
 - both processes exchange versioned JSON messages using newline-delimited framing;
 - the supervisor sends start, health, stop, and shutdown requests and checks correlated replies;
-- the supervisor waits for and reaps the worker process.
+- the supervisor waits for and reaps the worker process;
+- after an injected worker failure during `session.start`, the supervisor retries with a fresh worker ID and generation, then replays the desired session start.
 
 The mock worker maintains an in-memory session set. Its subsystem health deliberately reports `not_implemented`; it does not claim that capture, encoding, input, or networking works.
 
@@ -45,12 +46,12 @@ Expected log sequence includes:
 - One worker and one demonstration session per run.
 - `SOCK_STREAM` with newline-delimited JSON; this is a prototype choice, not the final transport decision.
 - 64 KiB maximum message size.
-- No external client API, heartbeat, peer-credential verification, durable request deduplication, or real media subsystem. Restart/backoff currently wraps the mock-worker demonstration only; recovery of a real Syzygy worker and its sessions is not implemented.
+- No external client API, heartbeat, peer-credential verification, durable request deduplication, or real media subsystem. Restart/backoff and desired-session replay are verified only with the mock worker; recovery of a real Syzygy worker and its sessions is not implemented.
 - The worker is a Rust mock, not the Syzygy C++ worker.
 - No media payload crosses the control socket.
 
 ## Verification status
 
-GitHub Actions currently performs a workspace build, IPC envelope unit tests, and an end-to-end supervisor/worker smoke run. The smoke run has confirmed handshake, start, health, stop, shutdown acknowledgement, and child exit status 0.
+GitHub Actions performs a workspace build, IPC envelope unit tests, a normal end-to-end supervisor/worker smoke run, and a fault-injected restart recovery run. The normal smoke run checks handshake, start, health, stop, shutdown acknowledgement, and child exit status 0. The restart test requires the first worker to fail during `session.start`, then checks retry logging, generation 2, and successful completion.
 
 CI now covers incompatible protocol versions, missing request IDs, stale worker generations, incorrect response types, request correlation, malformed/oversized/truncated/disconnected IPC input, crash reaping, graceful exit, and SIGTERM-to-SIGKILL escalation. Duplicate request replay and session idempotency are covered by worker unit tests. Supervisor-loss cleanup, peer authentication, durable session recovery, integration with a real Syzygy worker, and Fedora-host verification remain open.

@@ -16,6 +16,7 @@ async fn main() -> Result<()> {
     let socket = arg_value(&args, "--socket")?;
     let worker_id = arg_value(&args, "--worker-id")?;
     let generation: u64 = arg_value(&args, "--generation")?.parse()?;
+    let crash_on_start = args.iter().any(|arg| arg == "--crash-on-start");
     let stream = connect_with_retry(PathBuf::from(socket)).await?;
     println!("mock-worker: connected to supervisor");
     let (read, mut write) = stream.into_split();
@@ -46,6 +47,10 @@ async fn main() -> Result<()> {
         if let Some(cached_response) = request_cache.lookup(&request)? {
             send(&mut write, cached_response).await?;
             continue;
+        }
+        if crash_on_start && request.message_type == "session.start" {
+            eprintln!("mock-worker: injected failure during session.start");
+            std::process::exit(42);
         }
         let session_id = request.session_id.clone();
         let (body, should_exit) = match request.message_type.as_str() {
