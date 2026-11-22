@@ -100,15 +100,17 @@ jobs:
           set -euo pipefail
           stub="$RUNNER_TEMP/syzygy-serve-stub"
           output_file="$RUNNER_TEMP/aphelion-serve-output"
+          stop_marker="$RUNNER_TEMP/syzygy-serve-stop-marker"
           cat > "$stub" <<'EOF'
           #!/bin/sh
           printf '%s\n' "SYZYGY_SESSION_START client-token hevc"
-          trap 'printf "%s\n" "SYZYGY_SESSION_STOP client-token"; exit 0' TERM
+          trap 'touch "$APHELION_TEST_STOP_MARKER"; printf "%s\n" "SYZYGY_SESSION_STOP client-token"; exit 0' TERM
           while :; do sleep 60 & wait $!; done
           EOF
           chmod +x "$stub"
           APHELION_WORKER_KIND=syzygy \
             APHELION_SYZYGY_EXECUTABLE="$stub" \
+            APHELION_TEST_STOP_MARKER="$stop_marker" \
             ./target/debug/supervisor --serve >"$output_file" 2>&1 &
           supervisor_pid=$!
           cleanup() {
@@ -148,6 +150,9 @@ jobs:
           grep -Fq 'stop_host =>' "$output_file"
           grep -Fq 'shutdown acknowledged; waiting for child exit' "$output_file"
           grep -Fq 'worker generation 1 exited with exit status: 0' "$output_file"
+          test -e "$stop_marker"
+          grep -Fq 'observed worker event Started' "$output_file"
+          grep -Fq 'observed worker event Stopped' "$output_file"
           ! grep -Fq 'client-token' "$output_file"
 
       - name: Build installable Linux prototype bundle

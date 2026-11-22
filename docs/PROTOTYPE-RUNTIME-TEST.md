@@ -10,7 +10,7 @@ The CI bundle is built on Ubuntu x86_64. Fedora and other Linux distributions ha
 
 ## Run against an installed Syzygy binary
 
-Extract the archive, point the launcher at the existing Syzygy executable, and start Aphelion:
+Stop any Syzygy instance or service that is already running first. The launcher owns and stops only the Syzygy process it starts; it does not take over or stop a separately launched process. Extract the archive, point the launcher at the existing Syzygy executable, and start Aphelion:
 
 ```sh
 unzip aphelion-linux-x86_64-<commit>.zip
@@ -28,6 +28,14 @@ APHELION_SYZYGY_ARGS='["-config","/path/to/syzygy.conf"]' \
 ```
 
 Use the existing Syzygy configuration, pairing procedure, and Moonlight client to attempt a stream. Stop the host with Ctrl+C. The launcher reports host lifecycle and periodic worker health in the terminal. Session log tokens are converted to opaque IDs before they reach Aphelion logs or control messages.
+
+If Moonlight still sees the host after Aphelion exits, check for a separately running host before restarting the machine:
+
+```sh
+pgrep -a -f '[s]yzygy|[a]phelion'
+```
+
+Aphelion's managed child should be gone after a graceful Ctrl+C. Any remaining Syzygy command line is a separate process or service and must be stopped through the way it was started.
 
 ## Current boundaries and acceptance
 
