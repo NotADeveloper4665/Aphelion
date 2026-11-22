@@ -726,7 +726,7 @@ mod tests {
             .process_group(0);
         let child = command.spawn().expect("spawn process group");
         let process_group = Pid::from_raw(child.id().expect("test pid") as i32);
-        drop(ManagedChild { child, process_group, output_tasks: Vec::new(), cleaned: false });
+        drop(ManagedChild { child, process_group, output_tasks: Vec::new(), cleaned: false, started_at: Instant::now() });
 
         sleep(Duration::from_millis(400)).await;
         assert!(!marker.exists(), "descendant in the worker process group must be killed");
