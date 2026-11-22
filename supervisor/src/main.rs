@@ -296,6 +296,7 @@ mod tests {
         message.body = json!({"padding": "x".repeat(MAX_MESSAGE_BYTES)});
         let (mut reader, mut writer) = tokio::io::duplex(MAX_MESSAGE_BYTES + 1);
         assert!(send_message(&mut writer, &message).await.is_err());
+        drop(writer);
         let mut unexpected = Vec::new();
         reader.read_to_end(&mut unexpected).await.expect("read empty pipe");
         assert!(unexpected.is_empty());
