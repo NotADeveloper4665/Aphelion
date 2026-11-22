@@ -5,7 +5,7 @@ use aphelion_supervisor::{
 use serde_json::{json, Value};
 use std::{
     env,
-    os::unix::process::CommandExt,
+    os::unix::process::ExitStatusExt,
     path::PathBuf,
     process::Stdio,
     time::Duration,
@@ -15,7 +15,6 @@ use tokio::{
     io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader},
     net::UnixStream,
     process::{Child, Command},
-    sync::Mutex,
     time::{sleep, timeout},
 };
 use uuid::Uuid;
@@ -39,11 +38,10 @@ async fn run() -> Result<()> {
     let worker_id = argument(&args, "--worker-id")?.to_owned();
     let generation = argument(&args, "--generation")?.parse::<u64>()?;
     let stream = connect_with_retry(&socket_path).await?;
-    let (read, write) = stream.into_split();
-    let reader = Mutex::new(BufReader::new(read));
-    let writer = Mutex::new(write);
+    let (read, mut writer) = stream.into_split();
+    let mut reader = BufReader::new(read);
 
-    handshake(&reader, &writer, &worker_id, generation).await?;
+    handshake(&mut reader, &mut writer, &worker_id, generation).await?;
     eprintln!("syzygy-worker: control handshake complete for generation {generation}");
 
     let mut child: Option<Child> = None;
@@ -63,10 +61,7 @@ async fn run() -> Result<()> {
             }
         }
 
-        let request = {
-            let mut reader = reader.lock().await;
-            timeout(Duration::from_secs(60), read_message(&mut *reader)).await??
-        };
+        let request = timeout(Duration::from_secs(60), read_message(&mut reader)).await??;
         validate_request(&request, &worker_id, generation)?;
 
         match request.message_type.as_str() {
@@ -103,7 +98,7 @@ async fn run() -> Result<()> {
                         "process_id": process_id,
                     })
                 };
-                send_response(&writer, &request, &worker_id, generation, response_body).await?;
+                send_response(&mut writer, &request, &worker_id, generation, response_body).await?;
             }
             "session.stop" => {
                 let session_id = required_session_id(&request)?;
@@ -261,8 +256,8 @@ async fn stop_process(child: &mut Child) -> Result<()> {
 }
 
 async fn handshake<R, W>(
-    reader: &Mutex<BufReader<R>>,
-    writer: &Mutex<W>,
+    reader: &mut BufReader<R>,
+    writer: &mut W,
     worker_id: &str,
     generation: u64,
 ) -> Result<()>
@@ -289,10 +284,7 @@ where
     )
     .await?;
 
-    let ack = {
-        let mut reader = reader.lock().await;
-        timeout(Duration::from_secs(5), read_message(&mut *reader)).await??
-    };
+    let ack = timeout(Duration::from_secs(5), read_message(reader)).await??;
     if ack.kind != "response"
         || ack.message_type != "worker.hello_ack"
         || ack.request_id.as_deref() != Some(&request_id)
@@ -327,7 +319,7 @@ fn required_session_id(request: &Message) -> Result<&str> {
 }
 
 async fn send_response<W: AsyncWrite + Unpin>(
-    writer: &Mutex<W>,
+    writer: &mut W,
     request: &Message,
     worker_id: &str,
     generation: u64,
@@ -348,8 +340,7 @@ async fn send_response<W: AsyncWrite + Unpin>(
     .await
 }
 
-async fn send_message<W: AsyncWrite + Unpin>(writer: &Mutex<W>, message: &Message) -> Result<()> {
-    let mut writer = writer.lock().await;
+async fn send_message<W: AsyncWrite + Unpin>(writer: &mut W, message: &Message) -> Result<()> {
     let mut bytes = serde_json::to_vec(message)?;
     if bytes.len().saturating_add(1) > MAX_MESSAGE_BYTES {
         return Err("outgoing IPC message exceeds size limit".into());
