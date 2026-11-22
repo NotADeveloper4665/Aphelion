@@ -1,0 +1,24 @@
+name: Rust control-plane prototype
+
+on:
+  push:
+    branches:
+      - prototype/rust-control-plane
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Build workspace
+        run: cargo build --workspace --locked
+      - name: Run tests
+        run: cargo test --workspace --locked
