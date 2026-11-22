@@ -46,14 +46,15 @@ async fn run() -> Result<()> {
     handshake(&mut reader, &mut writer, &worker_id, generation).await?;
     eprintln!("syzygy-worker: control handshake complete for generation {generation}");
 
-    let mut child: Option<Child> = None;
+    let mut child: Option<ManagedChild> = None;
     let client_session_count = Arc::new(AtomicUsize::new(0));
     let mut managed_session: Option<String> = None;
     let mut last_exit: Option<Value> = None;
 
     loop {
         if let Some(current) = child.as_mut() {
-            if let Some(status) = current.try_wait()? {
+            if let Some(status) = current.child.try_wait()? {
+                let was_managed = managed_session.is_some();
                 last_exit = Some(json!({
                     "success": status.success(),
                     "code": status.code(),
@@ -61,6 +62,10 @@ async fn run() -> Result<()> {
                 }));
                 child = None;
                 managed_session = None;
+                client_session_count.store(0, Ordering::Relaxed);
+                if was_managed {
+                    return Err("managed Syzygy host process exited unexpectedly".into());
+                }
             }
         }
 
@@ -83,17 +88,17 @@ async fn run() -> Result<()> {
                         "already_running": true,
                         "stream_ready": false,
                         "intent_applied": false,
-                        "process_id": child.as_ref().and_then(Child::id),
+                        "process_id": child.as_ref().and_then(ManagedChild::id),
                     })
                 } else {
                     client_session_count.store(0, Ordering::Relaxed);
                     let mut spawned = spawn_syzygy(Arc::clone(&client_session_count))?;
                     // Allow immediate exec failures to surface before acknowledging process start.
                     sleep(Duration::from_millis(100)).await;
-                    if let Some(status) = spawned.try_wait()? {
+                    if let Some(status) = spawned.child.try_wait()? {
                         return Err(format!("Syzygy exited during launch with {status}").into());
                     }
-                    let process_id = spawned.id();
+                    let process_id = spawned.child.id();
                     child = Some(spawned);
                     managed_session = Some(session_id.to_owned());
                     last_exit = None;
@@ -138,9 +143,10 @@ async fn run() -> Result<()> {
             }
             "worker.health" => {
                 let running = if let Some(process) = child.as_mut() {
-                    match process.try_wait()? {
+                    match process.child.try_wait()? {
                         None => true,
                         Some(status) => {
+                            let was_managed = managed_session.is_some();
                             last_exit = Some(json!({
                                 "success": status.success(),
                                 "code": status.code(),
@@ -149,6 +155,9 @@ async fn run() -> Result<()> {
                             child = None;
                             managed_session = None;
                             client_session_count.store(0, Ordering::Relaxed);
+                            if was_managed {
+                                return Err("managed Syzygy host process exited unexpectedly".into());
+                            }
                             false
                         }
                     }
@@ -204,7 +213,27 @@ async fn run() -> Result<()> {
     Ok(())
 }
 
-fn spawn_syzygy(client_session_count: Arc<AtomicUsize>) -> Result<Child> {
+struct ManagedChild {
+    child: Child,
+    process_group: Pid,
+    cleaned: bool,
+}
+
+impl ManagedChild {
+    fn id(&self) -> Option<u32> {
+        self.child.id()
+    }
+}
+
+impl Drop for ManagedChild {
+    fn drop(&mut self) {
+        if !self.cleaned {
+            let _ = killpg(self.process_group, Signal::SIGKILL);
+        }
+    }
+}
+
+fn spawn_syzygy(client_session_count: Arc<AtomicUsize>) -> Result<ManagedChild> {
     let executable = env::var_os("APHELION_SYZYGY_EXECUTABLE")
         .ok_or("APHELION_SYZYGY_EXECUTABLE must point to the existing Syzygy binary")?;
     let configured_args = env::var("APHELION_SYZYGY_ARGS").unwrap_or_else(|_| "[]".to_owned());
@@ -226,6 +255,7 @@ fn spawn_syzygy(client_session_count: Arc<AtomicUsize>) -> Result<Child> {
         .process_group(0)
         .kill_on_drop(true);
     let mut child = command.spawn()?;
+    let process_group = Pid::from_raw(child.id().ok_or("Syzygy child has no process ID")? as i32);
 
     if let Some(stdout) = child.stdout.take() {
         tokio::spawn(drain_output(stdout, "stdout", Some(client_session_count)));
@@ -233,7 +263,7 @@ fn spawn_syzygy(client_session_count: Arc<AtomicUsize>) -> Result<Child> {
     if let Some(stderr) = child.stderr.take() {
         tokio::spawn(drain_output(stderr, "stderr", None));
     }
-    Ok(child)
+    Ok(ManagedChild { child, process_group, cleaned: false })
 }
 
 async fn drain_output<R: AsyncRead + Unpin>(
@@ -289,20 +319,20 @@ fn parse_session_lifecycle_log(line: &str) -> Option<(bool, &str)> {
     None
 }
 
-async fn stop_process(child: &mut Child) -> Result<()> {
-    if let Some(pid) = child.id() {
-        let group = Pid::from_raw(pid as i32);
-        let _ = killpg(group, Signal::SIGTERM);
-        if timeout(SHUTDOWN_GRACE, child.wait()).await.is_err() {
-            let _ = killpg(group, Signal::SIGKILL);
-            child.kill().await?;
-        } else {
-            // The leader exited; remove any helper descendants left in its group.
-            let _ = killpg(group, Signal::SIGKILL);
+async fn stop_process(process: &mut ManagedChild) -> Result<()> {
+    let _ = killpg(process.process_group, Signal::SIGTERM);
+    match timeout(SHUTDOWN_GRACE, process.child.wait()).await {
+        Ok(status) => {
+            status?;
         }
-    } else {
-        let _ = child.wait().await?;
+        Err(_) => {
+            let _ = killpg(process.process_group, Signal::SIGKILL);
+            process.child.kill().await?;
+        }
     }
+    // Remove helper descendants even when the leader exits during the grace window.
+    let _ = killpg(process.process_group, Signal::SIGKILL);
+    process.cleaned = true;
     Ok(())
 }
 
@@ -435,6 +465,30 @@ async fn connect_with_retry(path: &PathBuf) -> Result<UnixStream> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn dropping_managed_child_kills_its_process_group() {
+        let directory = env::temp_dir().join(format!("aphelion-worker-test-{}", Uuid::new_v4()));
+        tokio::fs::create_dir(&directory).await.expect("create test directory");
+        let marker = directory.join("descendant-survived");
+        let mut command = Command::new("sh");
+        command
+            .arg("-c")
+            .arg("sleep 0.2; touch \"$1\"; sleep 60")
+            .arg("test-shell")
+            .arg(&marker)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .process_group(0);
+        let child = command.spawn().expect("spawn process group");
+        let process_group = Pid::from_raw(child.id().expect("test pid") as i32);
+        drop(ManagedChild { child, process_group, cleaned: false });
+
+        sleep(Duration::from_millis(400)).await;
+        assert!(!marker.exists(), "descendant in the worker process group must be killed");
+        tokio::fs::remove_dir_all(directory).await.expect("remove test directory");
+    }
 
     #[test]
     fn parses_syzygy_session_lifecycle_logs_without_exposing_tokens() {
