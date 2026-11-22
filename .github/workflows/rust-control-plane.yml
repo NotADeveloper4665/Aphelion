@@ -200,7 +200,7 @@ jobs:
           grep -Fq 'shutdown acknowledged; waiting for child exit' "$output_file"
           grep -Fq 'worker generation 1 exited with exit status: 0' "$output_file"
           test -e "$stop_marker"
-          test "$(wc -l < "$stop_command_log")" -ge 2
+          test "$(wc -l < "$stop_command_log")" -ge 3
           grep -Fq 'observed worker event Started' "$output_file"
           grep -Fq 'observed worker event Stopped' "$output_file"
           ! grep -Fq 'client-token' "$output_file"

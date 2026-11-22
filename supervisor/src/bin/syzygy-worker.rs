@@ -129,6 +129,11 @@ async fn run() -> Result<()> {
                         &worker_id,
                         generation,
                     ).await?;
+                } else {
+                    // Also clear a service-managed host when this worker has
+                    // no foreground child to own (for example, after a
+                    // partial startup or external process recovery).
+                    request_syzygy_service_stop().await;
                 }
                 send_response(
                     &mut writer,
@@ -189,6 +194,8 @@ async fn run() -> Result<()> {
                         &worker_id,
                         generation,
                     ).await?;
+                } else {
+                    request_syzygy_service_stop().await;
                 }
                 flush_session_events(
                     &mut session_event_rx,
