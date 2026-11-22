@@ -35,3 +35,10 @@ Milestone 1 has passed its first real-stream smoke check, but its full exit crit
 The phone connected and streamed at 1920x1080 using `hevc_nvenc`; Syzygy initialized PipeWire/Opus audio. Aphelion observed the client `Started` and `Stopped` events. Syzygy reported screen-cast-only portal mode after device selection failed, so input behavior was not established. The user stopped remaining matching processes with a name-based kill command after the run. The terminal output did not establish that Ctrl+C caused Aphelion's graceful shutdown path or that all descendants were reaped by the supervisor.
 
 This confirms streaming and client-disconnect observation through the managed host. It does not confirm clean real-host shutdown. GitHub Actions verifies the SIGINT shutdown sequence against a stub process; the next target-host check should stop Aphelion with Ctrl+C and inspect whether any Syzygy process remains.
+
+## Ctrl+C shutdown verification
+
+**Observed:** 2026-11-22, reported by the maintainer after running the updated bundle from commit `8a8fee98a8924a018bc9d22106e3ebf77502e86d` against the installed Syzygy binary.  
+**Result:** Ctrl+C stopped the Aphelion-managed host correctly. This confirms the real-host graceful shutdown path on the maintainer's Fedora desktop. No process-list snapshot or terminal shutdown log was supplied, so descendant cleanup is recorded as user-observed rather than independently verified.
+
+This supersedes the earlier follow-up attempt's manual name-based process termination; that earlier attempt did not verify graceful shutdown.
