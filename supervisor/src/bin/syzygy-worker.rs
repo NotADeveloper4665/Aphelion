@@ -60,7 +60,7 @@ async fn run() -> Result<()> {
                     "signal": status.signal(),
                 }));
                 child = None;
-                return Err("managed Syzygy host process exited unexpectedly".into());
+                return Err(unexpected_syzygy_exit(status).into());
             }
         }
 
@@ -160,7 +160,7 @@ async fn run() -> Result<()> {
                                 "signal": status.signal(),
                             }));
                             child = None;
-                            return Err("managed Syzygy host process exited unexpectedly".into());
+                            return Err(unexpected_syzygy_exit(status).into());
                         }
                     }
                 } else {
@@ -534,6 +534,15 @@ fn ensure_no_existing_syzygy_process() -> Result<()> {
     }
 
     Ok(())
+}
+
+fn unexpected_syzygy_exit(status: std::process::ExitStatus) -> String {
+    format!(
+        "managed Syzygy host process exited unexpectedly (success={}, code={:?}, signal={:?})",
+        status.success(),
+        status.code(),
+        status.signal(),
+    )
 }
 
 async fn handshake<R, W>(

@@ -136,6 +136,54 @@ jobs:
           grep -Fq '"process_running":true' <<<"$output"
           grep -Fq "worker generation 2 exited with exit status: 0" <<<"$output"
 
+      - name: Report a managed Syzygy runtime crash before restarting
+        shell: bash
+        run: |
+          set -euo pipefail
+          stub="$RUNNER_TEMP/syzygy-runtime-crash-stub"
+          marker="$RUNNER_TEMP/syzygy-runtime-crash-once"
+          output_file="$RUNNER_TEMP/syzygy-runtime-crash-output"
+          cat > "$stub" <<'EOF'
+          #!/bin/sh
+          if [ "${1:-}" = "-stop" ]; then exit 0; fi
+          if [ ! -e "$APHELION_TEST_RUNTIME_CRASH_MARKER" ]; then
+            touch "$APHELION_TEST_RUNTIME_CRASH_MARKER"
+            sleep 1
+            exit 23
+          fi
+          trap 'exit 0' TERM
+          while :; do sleep 60 & wait $!; done
+          EOF
+          chmod +x "$stub"
+          APHELION_WORKER_KIND=syzygy \
+            APHELION_SYZYGY_EXECUTABLE="$stub" \
+            APHELION_TEST_RUNTIME_CRASH_MARKER="$marker" \
+            ./target/debug/supervisor --serve >"$output_file" 2>&1 &
+          supervisor_pid=$!
+          cleanup() {
+            kill -TERM "$supervisor_pid" 2>/dev/null || true
+            wait "$supervisor_pid" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+          for _ in $(seq 1 200); do
+            if grep -Fq 'starting worker generation 2' "$output_file" && \
+              [ "$(grep -Fc 'host is running; connect with a Moonlight client' "$output_file" || true)" -ge 2 ]; then
+              break
+            fi
+            if ! kill -0 "$supervisor_pid" 2>/dev/null; then
+              cat "$output_file"
+              exit 1
+            fi
+            sleep 0.1
+          done
+          grep -Fq 'managed Syzygy host process exited unexpectedly (success=false, code=Some(23), signal=None)' "$output_file"
+          grep -Fq 'starting worker generation 2' "$output_file"
+          test "$(grep -Fc 'host is running; connect with a Moonlight client' "$output_file")" -ge 2
+          kill -TERM "$supervisor_pid"
+          wait "$supervisor_pid"
+          trap - EXIT
+          grep -Fq 'worker generation 2 exited with exit status: 0' "$output_file"
+
       - name: Verify persistent host mode and graceful shutdown
         shell: bash
         run: |
