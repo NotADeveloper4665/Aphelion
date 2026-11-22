@@ -57,6 +57,24 @@ pub struct Message {
     pub body: Value,
 }
 
+pub const REQUIRED_WORKER_CAPABILITIES: [&str; 4] = [
+    "session.start",
+    "session.stop",
+    "worker.health",
+    "worker.shutdown",
+];
+
+pub fn missing_required_capabilities(capabilities: &Value) -> Vec<&'static str> {
+    let Some(capabilities) = capabilities.as_array() else {
+        return REQUIRED_WORKER_CAPABILITIES.to_vec();
+    };
+    REQUIRED_WORKER_CAPABILITIES
+        .iter()
+        .copied()
+        .filter(|required| !capabilities.iter().any(|value| value.as_str() == Some(required)))
+        .collect()
+}
+
 pub fn protocol_version_supported(version: &ProtocolVersion) -> bool {
     version.major == PROTOCOL_MAJOR && version.minor <= PROTOCOL_MINOR
 }
@@ -200,6 +218,23 @@ mod tests {
         assert_eq!(policy.delay_before_restart(4), None);
     }
 
+
+
+    #[test]
+    fn worker_capability_handshake_requires_all_lifecycle_commands() {
+        let available = serde_json::json!(["session.start", "session.stop", "worker.health", "worker.shutdown"]);
+        assert!(missing_required_capabilities(&available).is_empty());
+
+        let incomplete = serde_json::json!(["session.start", "worker.health"]);
+        assert_eq!(
+            missing_required_capabilities(&incomplete),
+            vec!["session.stop", "worker.shutdown"]
+        );
+        assert_eq!(
+            missing_required_capabilities(&serde_json::Value::Null),
+            REQUIRED_WORKER_CAPABILITIES.to_vec()
+        );
+    }
 
     #[test]
     fn session_intent_is_process_agnostic_and_serializable() {

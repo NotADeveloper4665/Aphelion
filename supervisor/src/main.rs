@@ -1,4 +1,4 @@
-use aphelion_supervisor::{message_identity_matches, protocol_version_supported, Message, RestartPolicy, SessionIntent, VideoCodec, VideoIntent, PROTOCOL_MAJOR, PROTOCOL_MINOR, MAX_MESSAGE_BYTES};
+use aphelion_supervisor::{message_identity_matches, missing_required_capabilities, protocol_version_supported, Message, RestartPolicy, SessionIntent, VideoCodec, VideoIntent, PROTOCOL_MAJOR, PROTOCOL_MINOR, MAX_MESSAGE_BYTES};
 use serde_json::json;
 use std::{env, os::unix::fs::PermissionsExt, process::Stdio, time::Duration};
 use nix::{sys::signal::{kill, Signal}, unistd::Pid};
@@ -107,6 +107,10 @@ async fn run_demo(
     }
     if !matches!(hello.request_id.as_deref(), Some(id) if !id.is_empty()) {
         return Err("worker.hello requires a non-empty request_id".into());
+    }
+    let missing_capabilities = missing_required_capabilities(&hello.body["capabilities"]);
+    if !missing_capabilities.is_empty() {
+        return Err(format!("worker is missing required capabilities: {}", missing_capabilities.join(", ")).into());
     }
     send_message(&mut write, &Message::new(
         "response", "worker.hello_ack", worker_id, generation,

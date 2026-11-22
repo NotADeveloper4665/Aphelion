@@ -8,6 +8,7 @@ This prototype proves a narrow Milestone 1 slice without modifying or building S
 - the supervisor launches a separate mock-worker process;
 - the worker connects back and identifies its instance and generation;
 - both processes exchange versioned JSON messages using newline-delimited framing;
+- the supervisor checks that the worker advertises session start/stop, health, and shutdown capabilities before accepting the handshake;
 - the supervisor sends start, health, stop, and shutdown requests and checks correlated replies;
 - the supervisor waits for and reaps the worker process;
 - after an injected worker failure during `session.start`, the supervisor retries with a fresh worker ID and generation, then replays the desired session start.
@@ -46,7 +47,7 @@ A `session.start` body contains desired stream intent: a display selector, codec
 }
 ```
 
-This schema describes a request contract only; the mock does not capture or stream media.
+This schema describes a request contract only; the mock does not capture or stream media. The handshake also requires the worker to advertise start, stop, health, and shutdown support before the supervisor accepts it.
 
 ## Request and session retry behavior
 
