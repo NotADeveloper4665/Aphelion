@@ -45,7 +45,9 @@ jobs:
           cat > "$stub" <<'EOF'
           #!/bin/sh
           printf '%s\n' "$SYZYGY_MANAGED_CHILD" "$@" > "$APHELION_TEST_ARG_LOG"
-          exec sleep 60
+          printf '%s\n' "SYZYGY_SESSION_START 0xabc hevc"
+          trap 'printf "%s\n" "SYZYGY_SESSION_STOP 0xabc"; exit 0' TERM
+          while :; do sleep 60 & wait $!; done
           EOF
           chmod +x "$stub"
           output="$(APHELION_WORKER_KIND=syzygy APHELION_SYZYGY_EXECUTABLE="$stub" APHELION_TEST_ARG_LOG="$arg_log" ./target/debug/supervisor 2>&1)" || {
@@ -55,7 +57,10 @@ jobs:
           printf '%s\n' "$output"
           grep -Fq '"state":"process_started"' <<<"$output"
           grep -Fq '"process_running":true' <<<"$output"
+          grep -Fq '"client_session_count":1' <<<"$output"
+          grep -Fq 'observed client session started; active count 1' <<<"$output"
           grep -Fq '"state":"stopped"' <<<"$output"
+          ! grep -Fq '0xabc' <<<"$output"
           grep -Fxq "1" "$arg_log"
           grep -Fxq -- "-s" "$arg_log"
           grep -Fxq -- "-foreground" "$arg_log"
