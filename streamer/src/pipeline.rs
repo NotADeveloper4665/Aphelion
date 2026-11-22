@@ -1,0 +1,171 @@
+//! Joins a capture source, software H.264 encoder, Moonlight video packetizer, and UDP
+//! sender. The caller must complete client authentication/session negotiation first and
+//! supply the negotiated peer, cipher, and client capabilities.
+
+use std::time::{Duration, Instant};
+
+use crate::{
+    capture::{CaptureError, FrameSource},
+    encoder::{EncodedAccessUnit, EncoderError, FfmpegH264Encoder},
+    moonlight_video::{MoonlightSendError, MoonlightSendStats, MoonlightUdpSender},
+};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PipelineStep {
+    Buffered,
+    Sent { frame_index: u32, stats: MoonlightSendStats },
+}
+
+#[derive(Debug)]
+pub enum PipelineError {
+    Capture(CaptureError),
+    Encoder(EncoderError),
+    Sender(MoonlightSendError),
+    MissingCaptureTimestamp,
+    ConfigurationMismatch,
+}
+
+impl std::fmt::Display for PipelineError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Capture(error) => write!(f, "capture failed: {error}"),
+            Self::Encoder(error) => write!(f, "encoding failed: {error}"),
+            Self::Sender(error) => write!(f, "video send failed: {error}"),
+            Self::MissingCaptureTimestamp => f.write_str("encoder output has no capture timestamp"),
+            Self::ConfigurationMismatch => f.write_str("capture and encoder dimensions do not match"),
+        }
+    }
+}
+
+impl std::error::Error for PipelineError {}
+
+/// Synchronous producer path. Keep `pump_once` on a dedicated media thread.
+pub struct SoftwareVideoPipeline<S: FrameSource> {
+    source: S,
+    encoder: FfmpegH264Encoder,
+    sender: MoonlightUdpSender,
+    stream_epoch: Instant,
+    submitted_frames: u64,
+    next_frame_index: u32,
+}
+
+impl<S: FrameSource> SoftwareVideoPipeline<S> {
+    pub fn new(
+        source: S,
+        encoder: FfmpegH264Encoder,
+        sender: MoonlightUdpSender,
+        capture_width: u32,
+        capture_height: u32,
+        encoder_width: u32,
+        encoder_height: u32,
+    ) -> Result<Self, PipelineError> {
+        if capture_width != encoder_width || capture_height != encoder_height {
+            return Err(PipelineError::ConfigurationMismatch);
+        }
+        Ok(Self { source, encoder, sender, stream_epoch: Instant::now(), submitted_frames: 0, next_frame_index: 0 })
+    }
+
+    /// Captures and submits one frame, then sends an access unit if FFmpeg has completed
+    /// one. AUD framing means the first output commonly becomes available after frame 2.
+    pub fn pump_once(&mut self) -> Result<PipelineStep, PipelineError> {
+        let frame = self.source.next_frame().map_err(PipelineError::Capture)?;
+        self.encoder.submit(&frame).map_err(PipelineError::Encoder)?;
+        self.submitted_frames = self.submitted_frames.saturating_add(1);
+        if self.submitted_frames < 2 { return Ok(PipelineStep::Buffered); }
+        match self.encoder.receive_timeout(Duration::from_millis(250)).map_err(PipelineError::Encoder)? {
+            Some(unit) => self.send(unit),
+            None => Ok(PipelineStep::Buffered),
+        }
+    }
+
+    /// Closes encoder input, sends any final buffered access units, and returns send stats.
+    pub fn finish(self) -> Result<Vec<(u32, MoonlightSendStats)>, PipelineError> {
+        let SoftwareVideoPipeline { encoder, sender, stream_epoch, next_frame_index, .. } = self;
+        let mut sender = sender;
+        let mut next_frame_index = next_frame_index;
+        let mut sent = Vec::new();
+        for unit in encoder.finish().map_err(PipelineError::Encoder)? {
+            let frame_index = next_frame_index;
+            let stats = send_unit(&mut sender, stream_epoch, frame_index, unit)?;
+            sent.push((frame_index, stats));
+            next_frame_index = next_frame_index.wrapping_add(1);
+        }
+        Ok(sent)
+    }
+
+    fn send(&mut self, unit: EncodedAccessUnit) -> Result<PipelineStep, PipelineError> {
+        let frame_index = self.next_frame_index;
+        let stats = send_unit(&mut self.sender, self.stream_epoch, frame_index, unit)?;
+        self.next_frame_index = self.next_frame_index.wrapping_add(1);
+        Ok(PipelineStep::Sent { frame_index, stats })
+    }
+}
+
+fn send_unit(
+    sender: &mut MoonlightUdpSender,
+    stream_epoch: Instant,
+    frame_index: u32,
+    unit: EncodedAccessUnit,
+) -> Result<MoonlightSendStats, PipelineError> {
+    let captured_at = unit.captured_at.ok_or(PipelineError::MissingCaptureTimestamp)?;
+    let elapsed = captured_at.saturating_duration_since(stream_epoch);
+    let timestamp_90khz = (elapsed.as_nanos().saturating_mul(90_000) / 1_000_000_000) as u32;
+    let processing_latency = Instant::now().saturating_duration_since(captured_at);
+    let latency_tenths_ms = (processing_latency.as_micros() / 100).min(u16::MAX as u128) as u16;
+    let is_idr = unit.nals.iter().any(|nal| nal.first().is_some_and(|header| *header & 0x1f == 5));
+    let nals: Vec<&[u8]> = unit.nals.iter().map(Vec::as_slice).collect();
+    sender.send_access_unit(frame_index, timestamp_90khz, is_idr, latency_tenths_ms, &nals)
+        .map_err(PipelineError::Sender)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{collections::VecDeque, net::UdpSocket};
+
+    use crate::{
+        capture::CapturedFrame,
+        encoder::EncoderConfig,
+        moonlight_video::MoonlightVideoConfig,
+    };
+
+    use super::*;
+
+    struct Frames(VecDeque<CapturedFrame>);
+
+    impl FrameSource for Frames {
+        fn next_frame(&mut self) -> Result<CapturedFrame, CaptureError> {
+            self.0.pop_front().ok_or(CaptureError::ProcessExited(Some(0)))
+        }
+    }
+
+    #[test]
+    fn sends_captured_encoded_h264_over_moonlight_udp_path() {
+        let config = EncoderConfig { width: 16, height: 16, frames_per_second: 30, bitrate_kbps: 500 };
+        let source = Frames(VecDeque::from([0x20, 0x90].map(|fill| CapturedFrame {
+            width: config.width,
+            height: config.height,
+            captured_at: Instant::now(),
+            bgra: vec![fill; 16 * 16 * 4],
+        })));
+        let encoder = FfmpegH264Encoder::spawn(config).expect("CI installs FFmpeg with libx264");
+        let receiver = UdpSocket::bind("127.0.0.1:0").unwrap();
+        receiver.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        let sender = MoonlightUdpSender::bind(
+            "127.0.0.1:0".parse().unwrap(), receiver.local_addr().unwrap(),
+            MoonlightVideoConfig::default(), None,
+        ).unwrap();
+        let mut pipeline = SoftwareVideoPipeline::new(source, encoder, sender, 16, 16, 16, 16).unwrap();
+        assert_eq!(pipeline.pump_once().unwrap(), PipelineStep::Buffered);
+        assert!(matches!(pipeline.pump_once().unwrap(), PipelineStep::Sent { frame_index: 0, .. }));
+        let flushed = pipeline.finish().unwrap();
+        assert_eq!(flushed.len(), 1);
+
+        let mut packet = [0; 1400];
+        let (bytes, _) = receiver.recv_from(&mut packet).unwrap();
+        assert_eq!(bytes, 1200);
+        assert_eq!(&packet[..2], &[0x90, 96]);
+        let (bytes, _) = receiver.recv_from(&mut packet).unwrap();
+        assert_eq!(bytes, 1200);
+        assert_eq!(&packet[..2], &[0x90, 96]);
+    }
+}
