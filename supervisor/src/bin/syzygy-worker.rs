@@ -4,10 +4,12 @@ use aphelion_supervisor::{
 };
 use serde_json::{json, Value};
 use std::{
+    collections::HashSet,
     env,
     os::unix::process::ExitStatusExt,
     path::PathBuf,
     process::Stdio,
+    sync::{atomic::{AtomicUsize, Ordering}, Arc},
     time::Duration,
 };
 use nix::{sys::signal::{killpg, Signal}, unistd::Pid};
@@ -45,6 +47,7 @@ async fn run() -> Result<()> {
     eprintln!("syzygy-worker: control handshake complete for generation {generation}");
 
     let mut child: Option<Child> = None;
+    let client_session_count = Arc::new(AtomicUsize::new(0));
     let mut managed_session: Option<String> = None;
     let mut last_exit: Option<Value> = None;
 
@@ -83,7 +86,8 @@ async fn run() -> Result<()> {
                         "process_id": child.as_ref().and_then(Child::id),
                     })
                 } else {
-                    let spawned = spawn_syzygy()?;
+                    client_session_count.store(0, Ordering::Relaxed);
+                    let spawned = spawn_syzygy(Arc::clone(&client_session_count))?;
                     let process_id = spawned.id();
                     child = Some(spawned);
                     managed_session = Some(session_id.to_owned());
@@ -112,6 +116,7 @@ async fn run() -> Result<()> {
                     stop_process(&mut process).await?;
                 }
                 managed_session = None;
+                client_session_count.store(0, Ordering::Relaxed);
                 send_response(
                     &mut writer,
                     &request,
@@ -138,6 +143,7 @@ async fn run() -> Result<()> {
                             }));
                             child = None;
                             managed_session = None;
+                            client_session_count.store(0, Ordering::Relaxed);
                             false
                         }
                     }
@@ -156,7 +162,8 @@ async fn run() -> Result<()> {
                         "managed_session": managed_session,
                         "last_exit": last_exit,
                         "stream_ready": false,
-                        "client_session_count": null,
+                        "client_session_count": client_session_count.load(Ordering::Relaxed),
+                        "client_session_count_source": "SYZYGY_SESSION_START_STOP logs",
                         "media_health": null,
                     }),
                 )
@@ -192,7 +199,7 @@ async fn run() -> Result<()> {
     Ok(())
 }
 
-fn spawn_syzygy() -> Result<Child> {
+fn spawn_syzygy(client_session_count: Arc<AtomicUsize>) -> Result<Child> {
     let executable = env::var_os("APHELION_SYZYGY_EXECUTABLE")
         .ok_or("APHELION_SYZYGY_EXECUTABLE must point to the existing Syzygy binary")?;
     let configured_args = env::var("APHELION_SYZYGY_ARGS").unwrap_or_else(|_| "[]".to_owned());
@@ -216,19 +223,36 @@ fn spawn_syzygy() -> Result<Child> {
     let mut child = command.spawn()?;
 
     if let Some(stdout) = child.stdout.take() {
-        tokio::spawn(drain_output(stdout, "stdout"));
+        tokio::spawn(drain_output(stdout, "stdout", Some(client_session_count)));
     }
     if let Some(stderr) = child.stderr.take() {
-        tokio::spawn(drain_output(stderr, "stderr"));
+        tokio::spawn(drain_output(stderr, "stderr", None));
     }
     Ok(child)
 }
 
-async fn drain_output<R: AsyncRead + Unpin>(stream: R, label: &'static str) {
+async fn drain_output<R: AsyncRead + Unpin>(
+    stream: R,
+    label: &'static str,
+    client_session_count: Option<Arc<AtomicUsize>>,
+) {
+    let mut active_tokens = HashSet::new();
     let mut lines = BufReader::new(stream).lines();
     loop {
         match lines.next_line().await {
-            Ok(Some(line)) => eprintln!("syzygy[{label}]: {line}"),
+            Ok(Some(line)) => {
+                eprintln!("syzygy[{label}]: {line}");
+                if let Some(count) = client_session_count.as_ref() {
+                    if let Some((started, token)) = parse_session_lifecycle_log(&line) {
+                        if started {
+                            active_tokens.insert(token.to_owned());
+                        } else {
+                            active_tokens.remove(token);
+                        }
+                        count.store(active_tokens.len(), Ordering::Relaxed);
+                    }
+                }
+            }
             Ok(None) => break,
             Err(error) => {
                 eprintln!("syzygy-worker: failed reading child {label}: {error}");
@@ -236,6 +260,21 @@ async fn drain_output<R: AsyncRead + Unpin>(stream: R, label: &'static str) {
             }
         }
     }
+}
+
+fn parse_session_lifecycle_log(line: &str) -> Option<(bool, &str)> {
+    for (marker, started) in [
+        ("SYZYGY_SESSION_START ", true),
+        ("SYZYGY_SESSION_STOP ", false),
+    ] {
+        if let Some(rest) = line.split_once(marker).map(|(_, rest)| rest) {
+            let token = rest.split_whitespace().next()?;
+            if !token.is_empty() {
+                return Some((started, token));
+            }
+        }
+    }
+    None
 }
 
 async fn stop_process(child: &mut Child) -> Result<()> {
@@ -379,6 +418,25 @@ async fn connect_with_retry(path: &PathBuf) -> Result<UnixStream> {
         }
     }
     Err(format!("could not connect to supervisor socket: {}", last_error.unwrap()).into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_syzygy_session_lifecycle_logs_without_exposing_tokens() {
+        assert_eq!(
+            parse_session_lifecycle_log("info: SYZYGY_SESSION_START 0x1234 hevc"),
+            Some((true, "0x1234")),
+        );
+        assert_eq!(
+            parse_session_lifecycle_log("info: SYZYGY_SESSION_STOP 0x1234"),
+            Some((false, "0x1234")),
+        );
+        assert_eq!(parse_session_lifecycle_log("ordinary Syzygy output"), None);
+        assert_eq!(parse_session_lifecycle_log("SYZYGY_SESSION_START "), None);
+    }
 }
 
 fn argument<'a>(args: &'a [String], name: &str) -> Result<&'a str> {
