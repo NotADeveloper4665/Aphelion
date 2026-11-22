@@ -1,4 +1,4 @@
-use aphelion_supervisor::{message_identity_matches, missing_required_capabilities, protocol_version_supported, Message, RestartPolicy, SessionIntent, VideoCodec, VideoIntent, PROTOCOL_MAJOR, PROTOCOL_MINOR, MAX_MESSAGE_BYTES};
+use aphelion_supervisor::{message_identity_matches, missing_required_capabilities, protocol_version_supported, Message, RestartPolicy, SessionRegistry, SessionTransition, SessionIntent, VideoCodec, VideoIntent, PROTOCOL_MAJOR, PROTOCOL_MINOR, MAX_MESSAGE_BYTES};
 use serde_json::json;
 use std::{env, os::unix::fs::PermissionsExt, process::Stdio, time::Duration};
 use nix::{sys::signal::{kill, Signal}, unistd::Pid};
@@ -119,6 +119,7 @@ async fn run_demo(
     )).await?;
     println!("supervisor: handshake complete");
 
+    let mut sessions = SessionRegistry::default();
     let start_id = Uuid::new_v4().to_string();
     let start = Message::new("request", "session.start", worker_id, generation,
         Some(start_id.clone()), Some(session_id.to_owned()), serde_json::to_value(SessionIntent {
@@ -127,37 +128,59 @@ async fn run_demo(
             audio_enabled: false,
         })?);
     send_message(&mut write, &start).await?;
-    let started = read_message(&mut reader).await?;
-    validate_response(&started, worker_id, generation, &start_id, "session.start")?;
+    let started = read_correlated_response(&mut reader, worker_id, generation, &start_id, "session.start", &mut sessions).await?;
     println!("supervisor: start_session => {}", started.body);
 
     let health_id = Uuid::new_v4().to_string();
     let health = Message::new("request", "worker.health", worker_id, generation,
         Some(health_id.clone()), None, json!({}));
     send_message(&mut write, &health).await?;
-    let health_result = read_message(&mut reader).await?;
-    validate_response(&health_result, worker_id, generation, &health_id, "worker.health")?;
+    let health_result = read_correlated_response(&mut reader, worker_id, generation, &health_id, "worker.health", &mut sessions).await?;
     println!("supervisor: get_health => {}", health_result.body);
 
     let stop_id = Uuid::new_v4().to_string();
     let stop = Message::new("request", "session.stop", worker_id, generation,
         Some(stop_id.clone()), Some(session_id.to_owned()), json!({}));
     send_message(&mut write, &stop).await?;
-    let stopped = read_message(&mut reader).await?;
-    validate_response(&stopped, worker_id, generation, &stop_id, "session.stop")?;
+    let stopped = read_correlated_response(&mut reader, worker_id, generation, &stop_id, "session.stop", &mut sessions).await?;
     println!("supervisor: stop_session => {}", stopped.body);
 
     let shutdown_id = Uuid::new_v4().to_string();
     let shutdown = Message::new("request", "worker.shutdown", worker_id, generation,
         Some(shutdown_id.clone()), None, json!({"reason": "prototype_complete"}));
     send_message(&mut write, &shutdown).await?;
-    let acknowledgement = read_message(&mut reader).await?;
-    validate_response(&acknowledgement, worker_id, generation, &shutdown_id, "worker.shutdown")?;
+    let acknowledgement = read_correlated_response(&mut reader, worker_id, generation, &shutdown_id, "worker.shutdown", &mut sessions).await?;
     println!("supervisor: shutdown acknowledged; waiting for child exit");
     drop(write);
     drop(reader);
     let _ = child;
     Ok(())
+}
+
+
+async fn read_correlated_response<R: tokio::io::AsyncBufRead + Unpin>(
+    reader: &mut R,
+    worker_id: &str,
+    generation: u64,
+    request_id: &str,
+    message_type: &str,
+    sessions: &mut SessionRegistry,
+) -> Result<Message> {
+    loop {
+        let message = read_message(reader).await?;
+        validate_identity(&message, worker_id, generation)?;
+        if !protocol_version_supported(&message.protocol) {
+            return Err("worker message protocol version is incompatible".into());
+        }
+        if message.kind == "event" {
+            if let Some(transition) = sessions.apply_event(&message).map_err(|error| error.to_owned())? {
+                println!("supervisor: observed worker event {transition:?}");
+            }
+            continue;
+        }
+        validate_response(&message, worker_id, generation, request_id, message_type)?;
+        return Ok(message);
+    }
 }
 
 async fn read_message<R: tokio::io::AsyncBufRead + Unpin>(reader: &mut R) -> Result<Message> {

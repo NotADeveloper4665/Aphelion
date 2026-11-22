@@ -53,12 +53,17 @@ async fn main() -> Result<()> {
             std::process::exit(42);
         }
         let session_id = request.session_id.clone();
+        let mut lifecycle_event = None;
         let (body, should_exit) = match request.message_type.as_str() {
             "session.start" => {
                 let sid = session_id.as_deref().ok_or("session.start requires session_id")?;
                 let intent: SessionIntent = serde_json::from_value(request.body.clone())?;
                 intent.validate().map_err(|error| error.to_owned())?;
-                (start_session(&mut active_sessions, sid), false)
+                let body = start_session(&mut active_sessions, sid);
+                if body["created"] == true {
+                    lifecycle_event = Some(("session.started", json!({"codec": intent.video.codec})));
+                }
+                (body, false)
             }
             "worker.health" => (
                 json!({
@@ -77,7 +82,11 @@ async fn main() -> Result<()> {
             ),
             "session.stop" => {
                 let sid = session_id.as_deref().ok_or("session.stop requires session_id")?;
-                (stop_session(&mut active_sessions, sid), false)
+                let body = stop_session(&mut active_sessions, sid);
+                if body["was_active"] == true {
+                    lifecycle_event = Some(("session.stopped", json!({})));
+                }
+                (body, false)
             }
             "worker.shutdown" => {
                 active_sessions.clear();
@@ -85,6 +94,11 @@ async fn main() -> Result<()> {
             }
             other => (json!({"error": "UNSUPPORTED_MESSAGE", "message": other}), false),
         };
+        if let Some((event_type, event_body)) = lifecycle_event {
+            let event = Message::new("event", event_type, worker_id, generation,
+                None, session_id.clone(), event_body);
+            send(&mut write, &event).await?;
+        }
         let response = Message::new("response", request.message_type.clone(), worker_id, generation,
             request.request_id.clone(), session_id, body);
         request_cache.insert(&request, &response)?;

@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::time::Duration;
+use std::{collections::HashSet, time::Duration};
 
 pub const PROTOCOL_MAJOR: u16 = 1;
 pub const PROTOCOL_MINOR: u16 = 0;
@@ -55,6 +55,50 @@ pub struct Message {
     pub session_id: Option<String>,
     #[serde(default)]
     pub body: Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SessionTransition {
+    Started { session_id: String, newly_active: bool },
+    Stopped { session_id: String, was_active: bool },
+}
+
+#[derive(Debug, Default)]
+pub struct SessionRegistry {
+    active: HashSet<String>,
+}
+
+impl SessionRegistry {
+    /// Apply a worker-originated lifecycle event. Unknown event types are ignored
+    /// so a compatible minor-version worker can add events without breaking replies.
+    pub fn apply_event(&mut self, message: &Message) -> Result<Option<SessionTransition>, &'static str> {
+        if message.kind != "event" {
+            return Err("session lifecycle message must be an event");
+        }
+        let session_id = message.session_id.as_deref()
+            .filter(|id| !id.trim().is_empty())
+            .ok_or("session lifecycle event requires a non-empty session_id")?
+            .to_owned();
+        match message.message_type.as_str() {
+            "session.started" => {
+                let newly_active = self.active.insert(session_id.clone());
+                Ok(Some(SessionTransition::Started { session_id, newly_active }))
+            }
+            "session.stopped" => {
+                let was_active = self.active.remove(&session_id);
+                Ok(Some(SessionTransition::Stopped { session_id, was_active }))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    pub fn is_active(&self, session_id: &str) -> bool {
+        self.active.contains(session_id)
+    }
+
+    pub fn active_count(&self) -> usize {
+        self.active.len()
+    }
 }
 
 pub const REQUIRED_WORKER_CAPABILITIES: [&str; 4] = [
@@ -269,6 +313,48 @@ mod tests {
         intent.display = "default".to_owned();
         intent.video.width = 0;
         assert!(intent.validate().is_err());
+    }
+
+
+    #[test]
+    fn session_registry_tracks_worker_events_idempotently() {
+        let mut sessions = SessionRegistry::default();
+        let event = |kind, session_id| Message::new(
+            "event", kind, "worker-a", 3, None, Some(session_id.to_owned()), json!({}));
+
+        let started = sessions.apply_event(&event("session.started", "session-a"))
+            .expect("valid event").expect("known event");
+        assert_eq!(started, SessionTransition::Started {
+            session_id: "session-a".to_owned(),
+            newly_active: true,
+        });
+        assert!(sessions.is_active("session-a"));
+        assert_eq!(sessions.active_count(), 1);
+
+        let repeated = sessions.apply_event(&event("session.started", "session-a"))
+            .expect("duplicate event").expect("known event");
+        assert_eq!(repeated, SessionTransition::Started {
+            session_id: "session-a".to_owned(),
+            newly_active: false,
+        });
+
+        let stopped = sessions.apply_event(&event("session.stopped", "session-a"))
+            .expect("stop event").expect("known event");
+        assert_eq!(stopped, SessionTransition::Stopped {
+            session_id: "session-a".to_owned(),
+            was_active: true,
+        });
+        assert_eq!(sessions.active_count(), 0);
+    }
+
+    #[test]
+    fn session_registry_rejects_missing_identity_and_ignores_unknown_events() {
+        let mut sessions = SessionRegistry::default();
+        let missing_id = Message::new("event", "session.started", "worker-a", 1, None, None, json!({}));
+        assert!(sessions.apply_event(&missing_id).is_err());
+
+        let unknown = Message::new("event", "worker.metrics", "worker-a", 1, None, None, json!({}));
+        assert_eq!(sessions.apply_event(&unknown).expect("unknown compatible event"), None);
     }
 
     #[test]

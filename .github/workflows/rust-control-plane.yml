@@ -32,4 +32,6 @@ jobs:
           grep -Fq "injected failure during session.start" <<<"$output"
           grep -Fq "retry 1/3" <<<"$output"
           grep -Fq "starting worker generation 2" <<<"$output"
+          grep -Fq "observed worker event Started" <<<"$output"
+          grep -Fq "observed worker event Stopped" <<<"$output"
           grep -Fq "worker generation 2 exited with exit status: 0" <<<"$output"

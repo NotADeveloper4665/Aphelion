@@ -9,7 +9,7 @@ This prototype proves a narrow Milestone 1 slice without modifying or building S
 - the worker connects back and identifies its instance and generation;
 - both processes exchange versioned JSON messages using newline-delimited framing;
 - the supervisor checks that the worker advertises session start/stop, health, and shutdown capabilities before accepting the handshake;
-- the supervisor sends start, health, stop, and shutdown requests and checks correlated replies;
+- the supervisor sends start, health, stop, and shutdown requests and checks correlated replies while accepting worker-originated session lifecycle events;
 - the supervisor waits for and reaps the worker process;
 - after an injected worker failure during `session.start`, the supervisor retries with a fresh worker ID and generation, then replays the desired session start.
 
@@ -71,4 +71,4 @@ For the source-backed real-worker integration boundary, see [Syzygy worker adapt
 
 GitHub Actions performs a workspace build, IPC envelope unit tests, a normal end-to-end supervisor/worker smoke run, and a fault-injected restart recovery run. The normal smoke run checks handshake, start, health, stop, shutdown acknowledgement, and child exit status 0. The restart test requires the first worker to fail during `session.start`, then checks retry logging, generation 2, and successful completion.
 
-CI now covers incompatible protocol versions, missing request IDs, stale worker generations, incorrect response types, request correlation, malformed/oversized/truncated/disconnected IPC input, crash reaping, graceful exit, and SIGTERM-to-SIGKILL escalation. Duplicate request replay and session idempotency are covered by worker unit tests. Supervisor-loss cleanup, peer authentication, durable session recovery, integration with a real Syzygy worker, and Fedora-host verification remain open.
+CI now covers incompatible protocol versions, missing request IDs, stale worker generations, incorrect response types, request correlation, worker-originated session start/stop event ordering, malformed/oversized/truncated/disconnected IPC input, crash reaping, graceful exit, and SIGTERM-to-SIGKILL escalation. Duplicate request replay and session idempotency are covered by worker unit tests. Supervisor-loss cleanup, peer authentication, durable session recovery, integration with a real Syzygy worker, and Fedora-host verification remain open.

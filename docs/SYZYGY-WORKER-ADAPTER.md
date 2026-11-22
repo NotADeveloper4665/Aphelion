@@ -18,7 +18,7 @@ An Aphelion adapter must own the top-level launcher and its descendants. It must
 
 Syzygy creates a client session after incoming streaming-protocol work. The source logs `SYZYGY_SESSION_START <address-of-session> <codec>` and `SYZYGY_SESSION_STOP <address-of-session>` from [src/stream.cpp](https://github.com/NotADeveloper4665/Syzygy/blob/c50d417c774320632cbe6fa6fc1f1a6bdfc8c58d/src/stream.cpp#L2168-L2170). The value is a process-local pointer. It may be reused and must not become an Aphelion `session_id`. The service manager currently consumes these lines to maintain an active-client count and codec list; it does not expose a durable client identity or a Unix-socket event API.
 
-The mock prototype currently models the supervisor issuing `session.start` and `session.stop`. That is useful for exercising the control protocol, but it does not match Syzygy’s current Moonlight-driven session lifecycle. No existing Syzygy control socket accepts those commands.
+The mock prototype still models the supervisor issuing `session.start` and `session.stop`, but it now sends separate worker-originated `session.started` and `session.stopped` events and the supervisor tracks those events while awaiting correlated replies. This exercises the event direction needed by an adapter, but it does not make the mock command direction match Syzygy’s current Moonlight-driven session lifecycle. No existing Syzygy control socket accepts those commands.
 
 ## Adapter contract for the next implementation step
 
