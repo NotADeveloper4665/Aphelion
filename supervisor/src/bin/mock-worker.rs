@@ -1,6 +1,6 @@
 use aphelion_supervisor::{message_identity_matches, protocol_version_supported, Message, MAX_MESSAGE_BYTES};
 use serde_json::json;
-use std::{collections::{HashMap, VecDeque}, env, path::PathBuf, time::Duration};
+use std::{collections::{HashMap, VecDeque}, env, path::PathBuf, time::{Duration, Instant, SystemTime, UNIX_EPOCH}};
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     net::UnixStream,
@@ -35,6 +35,7 @@ async fn main() -> Result<()> {
     println!("mock-worker: handshake accepted");
 
     let mut host_running = false;
+    let mut host_started_at: Option<Instant> = None;
     let mut request_cache = RequestCache::new(MAX_CACHED_REQUESTS);
     loop {
         let request = read_message(&mut reader).await?;
@@ -56,25 +57,40 @@ async fn main() -> Result<()> {
             return Err("host lifecycle requests must not include session_id".into());
         }
         let (body, should_exit) = match request.message_type.as_str() {
-            "host.start" => (start_host(&mut host_running), false),
+            "host.start" => {
+                let was_running = host_running;
+                let body = start_host(&mut host_running);
+                if !was_running {
+                    host_started_at = Some(Instant::now());
+                }
+                (body, false)
+            },
             "worker.health" => (
                 json!({
+                    "health_schema_version": 1,
+                    "observed_at_unix_ms": unix_timestamp_ms(),
                     "worker_state": "ready",
                     "host_running": host_running,
+                    "host_uptime_ms": host_started_at.map(|started| started.elapsed().as_millis().min(u64::MAX as u128) as u64),
                     "active_sessions": 0,
                     "subsystems": {
-                        "capture": {"state": "not_implemented"},
-                        "encoder": {"state": "not_implemented"},
-                        "audio": {"state": "disabled_in_prototype"},
-                        "input": {"state": "not_implemented"},
-                        "network": {"state": "not_implemented"}
+                        "capture": {"state": "not_implemented", "reason": "mock_worker_has_no_media_path"},
+                        "encoder": {"state": "not_implemented", "reason": "mock_worker_has_no_media_path"},
+                        "audio": {"state": "not_implemented", "reason": "mock_worker_has_no_media_path"},
+                        "input": {"state": "not_implemented", "reason": "mock_worker_has_no_media_path"},
+                        "network": {"state": "not_implemented", "reason": "mock_worker_has_no_media_path"}
                     },
                     "metrics": null
                 }), false
             ),
-            "host.stop" => (stop_host(&mut host_running), false),
+            "host.stop" => {
+                let body = stop_host(&mut host_running);
+                host_started_at = None;
+                (body, false)
+            },
             "worker.shutdown" => {
                 host_running = false;
+                host_started_at = None;
                 (json!({"state": "shutting_down", "host_running": false}), true)
             }
             other => (json!({"error": "UNSUPPORTED_MESSAGE", "message": other}), false),
@@ -134,6 +150,15 @@ impl RequestCache {
         self.entries.insert(request_id, (serde_json::to_vec(request)?, response.clone()));
         Ok(())
     }
+}
+
+
+fn unix_timestamp_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .min(u64::MAX as u128) as u64
 }
 
 fn start_host(host_running: &mut bool) -> serde_json::Value {

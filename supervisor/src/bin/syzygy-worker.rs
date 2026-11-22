@@ -16,7 +16,8 @@ use tokio::{
     process::{Child, Command},
     sync::mpsc,
     task::JoinHandle,
-    time::{sleep, timeout},
+    time::{sleep, timeout, Instant},
+    time::{SystemTime, UNIX_EPOCH},
 };
 use uuid::Uuid;
 
@@ -87,6 +88,7 @@ async fn run() -> Result<()> {
                         "already_running": true,
                         "stream_ready": false,
                         "process_id": child.as_ref().and_then(ManagedChild::id),
+                        "host_uptime_ms": child.as_ref().map(ManagedChild::uptime_ms),
                     })
                 } else {
                     // Clear any Syzygy-managed background instance first. The
@@ -161,6 +163,8 @@ async fn run() -> Result<()> {
                     &worker_id,
                     generation,
                     json!({
+                        "health_schema_version": 1,
+                        "observed_at_unix_ms": unix_timestamp_ms(),
                         "state": if running { "process_running" } else { "stopped" },
                         "process_running": running,
                         "process_id": child.as_ref().and_then(ManagedChild::id),
@@ -168,7 +172,7 @@ async fn run() -> Result<()> {
                         "stream_ready": false,
                         "client_session_count": sessions.active_count(),
                         "client_session_count_source": "SYZYGY_SESSION_START_STOP logs",
-                        "media_health": null,
+                        "subsystems": unavailable_subsystem_health(),
                     }),
                 )
                 .await?;
@@ -224,11 +228,16 @@ struct ManagedChild {
     process_group: Pid,
     output_tasks: Vec<JoinHandle<()>>,
     cleaned: bool,
+    started_at: Instant,
 }
 
 impl ManagedChild {
     fn id(&self) -> Option<u32> {
         self.child.id()
+    }
+
+    fn uptime_ms(&self) -> u64 {
+        self.started_at.elapsed().as_millis().min(u64::MAX as u128) as u64
     }
 }
 
@@ -271,7 +280,7 @@ fn spawn_syzygy(session_event_tx: mpsc::Sender<ObservedSessionLog>) -> Result<Ma
     if let Some(stderr) = child.stderr.take() {
         output_tasks.push(tokio::spawn(drain_output(stderr, "stderr", None)));
     }
-    Ok(ManagedChild { child, process_group, output_tasks, cleaned: false })
+    Ok(ManagedChild { child, process_group, output_tasks, cleaned: false, started_at: Instant::now() })
 }
 
 #[derive(Debug)]
@@ -663,6 +672,22 @@ async fn connect_with_retry(path: &PathBuf) -> Result<UnixStream> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn health_marks_unreported_media_telemetry_unavailable() {
+        let health = unavailable_subsystem_health();
+        for name in ["capture", "encoder", "audio", "input", "network"] {
+            assert_eq!(health[name]["state"], "unavailable", "{name}");
+            assert_eq!(
+                health[name]["reason"],
+                "structured_health_not_exposed_by_syzygy_adapter",
+                "{name}"
+            );
+        }
+        assert_eq!(health["capture"]["fps"], Value::Null);
+        assert_eq!(health["encoder"]["avg_encode_ms"], Value::Null);
+    }
+
+
     use super::*;
 
     #[tokio::test]

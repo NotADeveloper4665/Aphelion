@@ -132,3 +132,8 @@ Still required before Aphelion media-path implementation:
 6. Complete the dependency/license provenance check.
 
 Do not convert the missing rows to PASS based on successful RPM packaging or generic CI smoke checks. The maintainer must review the remaining evidence before approving the Milestone 0 exit gate.
+
+
+## Additional Aphelion host observation
+
+A later target-host run with Aphelion's supervisor and Syzygy `0.0.9` (`2f1fb5ea140ab517fc7413655e9d0b3076d3c825`) established a 1920x1080 HEVC NVENC Moonlight stream and PipeWire/Opus audio. A successful Ctrl+C shutdown was subsequently reported. These are useful compatibility observations, but they do not close the pinned Milestone 0 baseline: input operated in screen-cast-only mode, and a direct-Syzygy comparison, repeated client cycles, process-list evidence, and the hardware/capture/audio matrix remain unverified. Detailed notes are in [Milestone 1 runtime results](MILESTONE-1-RUNTIME-RESULTS.md).

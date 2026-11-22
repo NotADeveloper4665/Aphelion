@@ -37,7 +37,7 @@ Expected log sequence includes:
 
 ## Host lifecycle and client sessions
 
-The worker IPC controls a host process, not an individual Moonlight client. `host.start` and `host.stop` carry no `session_id`; repeated start while running and stop while stopped are idempotent. Moonlight protocol activity creates and ends client sessions. The supervisor tracks worker-originated `session.started` and `session.stopped` events when their identity can be safely correlated.
+Syzygy-adapter health uses schema version 1 and includes a wall-clock observation timestamp, host process uptime, and session-count provenance. Capture, encoder, audio, input, and network each have separate entries marked `unavailable` with reason `structured_health_not_exposed_by_syzygy_adapter`; this means telemetry is unavailable, not that those streaming stages are known to be broken. The worker IPC controls a host process, not an individual Moonlight client. `host.start` and `host.stop` carry no `session_id`; repeated start while running and stop while stopped are idempotent. Moonlight protocol activity creates and ends client sessions. The supervisor tracks worker-originated `session.started` and `session.stopped` events when their identity can be safely correlated.
 
 The design draft's process-agnostic stream intent remains a candidate for a future user-facing desired-session API. It is not sent to the current Syzygy adapter because the audited CLI does not expose a verified mapping for display, codec, resolution, frame rate, and audio settings. The adapter reports that the stream is not ready rather than implying those values were applied. See [Syzygy worker adapter](SYZYGY-WORKER-ADAPTER.md) for evidence and remaining integration work.
 
@@ -64,3 +64,8 @@ Worker-originated `session.started` and `session.stopped` events update an idemp
 GitHub Actions performs a workspace build, IPC envelope and lifecycle unit tests, a normal mock-worker smoke run, a fault-injected restart recovery run, and a Syzygy process-adapter run against a stub executable. The normal smoke run checks handshake, host start, health, host stop, shutdown acknowledgement, and child exit status 0. The restart test requires the first worker to fail during `host.start`, then checks retry logging, generation 2, and successful completion.
 
 CI now covers incompatible protocol versions, missing request IDs, stale worker generations, incorrect response types, request correlation, worker-originated session start/stop event ordering, malformed/oversized/truncated/disconnected IPC input, crash reaping, graceful exit, and SIGTERM-to-SIGKILL escalation. Duplicate request replay and host lifecycle idempotency are covered by worker unit tests. Supervisor-loss cleanup, peer authentication, durable session recovery, integration against a built Syzygy binary, headless descendant cleanup, real Moonlight session behavior, and Fedora-host verification remain open.
+
+
+## Milestone 2 observability start
+
+The Syzygy adapter now reports health schema version, observation time, measured host-process uptime, client-session count with its log-derived source, and explicit per-subsystem telemetry availability. Real capture/encoder/audio/input/network metrics remain unavailable until Syzygy exposes structured signals with defined semantics. GitHub Actions repeats a managed-host start/stop cycle three times with a stub and checks that the owned process and delayed descendant do not survive shutdown; real Moonlight repeat-cycle and direct-versus-managed comparisons remain target-host work.

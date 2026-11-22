@@ -63,6 +63,7 @@ fn request_cache_evicts_old_entries_at_its_bound() {
 #[test]
 fn starting_and_stopping_host_are_idempotent() {
     let mut host_running = false;
+    let mut host_started_at: Option<Instant> = None;
     let first_start = start_host(&mut host_running);
     let repeated_start = start_host(&mut host_running);
     assert_eq!(first_start["already_running"], false);

@@ -24,7 +24,7 @@ This confirms the first real client connection and active stream through the sup
 - Record the exact Syzygy revision, host configuration, capture path, and encoder details for a reproducible result.
 - Complete the remaining Milestone 0 baseline rows; this smoke test does not establish the pinned baseline, hardware matrix, performance results, or long-run reliability.
 
-Milestone 1 has a maintainer-observed real stream, disconnect event, and successful real-host Ctrl+C stop. Its full exit criteria are not yet met: subsystem-specific health is not implemented, repeated lifecycle and orphan checks remain open, compatibility against direct Syzygy launch is unmeasured, and the Milestone 0 baseline is partial.
+Milestone 1 has a maintainer-observed real stream, disconnect event, and successful real-host Ctrl+C stop. Per-subsystem telemetry availability is now reported honestly by the adapter. Its full exit criteria are not yet met: real subsystem measurements are unavailable, repeated real Moonlight cycles and orphan checks remain open, compatibility against direct Syzygy launch is unmeasured, and the Milestone 0 baseline is partial. CI repeats the managed host lifecycle three times with a stub and verifies cleanup; that is not a substitute for target-hardware evidence.
 
 ## Follow-up runtime attempt
 
