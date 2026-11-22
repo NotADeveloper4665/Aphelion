@@ -1,6 +1,6 @@
-use aphelion_supervisor::{message_identity_matches, protocol_version_supported, Message, SessionIntent, MAX_MESSAGE_BYTES};
+use aphelion_supervisor::{message_identity_matches, protocol_version_supported, Message, MAX_MESSAGE_BYTES};
 use serde_json::json;
-use std::{collections::{HashMap, HashSet, VecDeque}, env, path::PathBuf, time::Duration};
+use std::{collections::{HashMap, VecDeque}, env, path::PathBuf, time::Duration};
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     net::UnixStream,
@@ -25,7 +25,7 @@ async fn main() -> Result<()> {
     let hello_id = Uuid::new_v4().to_string();
     send(&mut write, &Message::new("event", "worker.hello", worker_id, generation,
         Some(hello_id.clone()), None,
-        json!({"build": "mock-worker/0.1.0", "capabilities": ["session.start", "session.stop", "worker.health", "worker.shutdown"]}))).await?;
+        json!({"build": "mock-worker/0.1.0", "capabilities": ["host.start", "host.stop", "worker.health", "worker.shutdown"]}))).await?;
     let ack = read_message(&mut reader).await?;
     if ack.kind != "response" || ack.message_type != "worker.hello_ack" || ack.request_id.as_deref() != Some(hello_id.as_str())
         || !protocol_version_supported(&ack.protocol)
@@ -34,7 +34,7 @@ async fn main() -> Result<()> {
     }
     println!("mock-worker: handshake accepted");
 
-    let mut active_sessions = HashSet::<String>::new();
+    let mut host_running = false;
     let mut request_cache = RequestCache::new(MAX_CACHED_REQUESTS);
     loop {
         let request = read_message(&mut reader).await?;
@@ -48,28 +48,24 @@ async fn main() -> Result<()> {
             send(&mut write, cached_response).await?;
             continue;
         }
-        if crash_on_start && request.message_type == "session.start" {
-            eprintln!("mock-worker: injected failure during session.start");
+        if crash_on_start && request.message_type == "host.start" {
+            eprintln!("mock-worker: injected failure during host.start");
             std::process::exit(42);
         }
-        let session_id = request.session_id.clone();
-        let mut lifecycle_event = None;
+        if request.session_id.is_some() {
+            return Err("host lifecycle requests must not include session_id".into());
+        }
         let (body, should_exit) = match request.message_type.as_str() {
-            "session.start" => {
-                let sid = session_id.as_deref().ok_or("session.start requires session_id")?;
-                let intent: SessionIntent = serde_json::from_value(request.body.clone())?;
-                intent.validate().map_err(|error| error.to_owned())?;
-                let body = start_session(&mut active_sessions, sid);
-                if body["created"] == true {
-                    lifecycle_event = Some(("session.started", json!({"codec": intent.video.codec})));
-                }
-                (body, false)
+            "host.start" => {
+                let already_running = host_running;
+                host_running = true;
+                (json!({"state": "process_running", "already_running": already_running}), false)
             }
             "worker.health" => (
                 json!({
                     "worker_state": "ready",
-                    "active_sessions": active_sessions.len(),
-                    "sessions": active_sessions.iter().collect::<Vec<_>>(),
+                    "host_running": host_running,
+                    "active_sessions": 0,
                     "subsystems": {
                         "capture": {"state": "not_implemented"},
                         "encoder": {"state": "not_implemented"},
@@ -80,27 +76,19 @@ async fn main() -> Result<()> {
                     "metrics": null
                 }), false
             ),
-            "session.stop" => {
-                let sid = session_id.as_deref().ok_or("session.stop requires session_id")?;
-                let body = stop_session(&mut active_sessions, sid);
-                if body["was_active"] == true {
-                    lifecycle_event = Some(("session.stopped", json!({})));
-                }
-                (body, false)
+            "host.stop" => {
+                let was_running = host_running;
+                host_running = false;
+                (json!({"state": "stopped", "was_running": was_running}), false)
             }
             "worker.shutdown" => {
-                active_sessions.clear();
-                (json!({"state": "shutting_down", "active_sessions": 0}), true)
+                host_running = false;
+                (json!({"state": "shutting_down", "host_running": false}), true)
             }
             other => (json!({"error": "UNSUPPORTED_MESSAGE", "message": other}), false),
         };
-        if let Some((event_type, event_body)) = lifecycle_event {
-            let event = Message::new("event", event_type, worker_id, generation,
-                None, session_id.clone(), event_body);
-            send(&mut write, &event).await?;
-        }
         let response = Message::new("response", request.message_type.clone(), worker_id, generation,
-            request.request_id.clone(), session_id, body);
+            request.request_id.clone(), request.session_id.clone(), body);
         request_cache.insert(&request, &response)?;
         send(&mut write, &response).await?;
         if should_exit {
@@ -156,14 +144,16 @@ impl RequestCache {
     }
 }
 
-fn start_session(active_sessions: &mut HashSet<String>, session_id: &str) -> serde_json::Value {
-    let created = active_sessions.insert(session_id.to_owned());
-    json!({"state": "running", "created": created, "active_sessions": active_sessions.len()})
+fn start_host(host_running: &mut bool) -> serde_json::Value {
+    let already_running = *host_running;
+    *host_running = true;
+    json!({"state": "process_running", "already_running": already_running})
 }
 
-fn stop_session(active_sessions: &mut HashSet<String>, session_id: &str) -> serde_json::Value {
-    let was_active = active_sessions.remove(session_id);
-    json!({"state": "stopped", "was_active": was_active, "active_sessions": active_sessions.len()})
+fn stop_host(host_running: &mut bool) -> serde_json::Value {
+    let was_running = *host_running;
+    *host_running = false;
+    json!({"state": "stopped", "was_running": was_running})
 }
 
 fn arg_value<'a>(args: &'a [String], name: &str) -> Result<&'a str> {

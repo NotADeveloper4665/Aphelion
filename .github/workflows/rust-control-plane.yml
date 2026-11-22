@@ -29,11 +29,11 @@ jobs:
             exit 1
           }
           printf '%s\n' "$output"
-          grep -Fq "injected failure during session.start" <<<"$output"
+          grep -Fq "injected failure during host.start" <<<"$output"
           grep -Fq "retry 1/3" <<<"$output"
           grep -Fq "starting worker generation 2" <<<"$output"
-          grep -Fq "observed worker event Started" <<<"$output"
-          grep -Fq "observed worker event Stopped" <<<"$output"
+          grep -Fq "start_host =>" <<<"$output"
+          grep -Fq "stop_host =>" <<<"$output"
           grep -Fq "worker generation 2 exited with exit status: 0" <<<"$output"
 
       - name: Verify Syzygy process adapter with a stub binary
@@ -58,7 +58,6 @@ jobs:
           grep -Fq '"state":"process_started"' <<<"$output"
           grep -Fq '"process_running":true' <<<"$output"
           grep -Fq '"client_session_count":1' <<<"$output"
-          grep -Fq 'observed client session started; active count 1' <<<"$output"
           grep -Fq '"state":"stopped"' <<<"$output"
           ! grep -Fq '0xabc' <<<"$output"
           grep -Fxq "1" "$arg_log"

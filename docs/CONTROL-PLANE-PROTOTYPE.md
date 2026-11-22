@@ -8,10 +8,10 @@ This prototype proves a narrow Milestone 1 slice without modifying or building S
 - by default the supervisor launches a separate mock-worker process; with `APHELION_WORKER_KIND=syzygy`, it launches the separate `syzygy-worker` adapter;
 - the worker connects back and identifies its instance and generation;
 - both processes exchange versioned JSON messages using newline-delimited framing;
-- the supervisor checks that the worker advertises session start/stop, health, and shutdown capabilities before accepting the handshake;
-- the supervisor sends start, health, stop, and shutdown requests and checks correlated replies while accepting worker-originated session lifecycle events;
+- the supervisor checks that the worker advertises host start/stop, health, and shutdown capabilities before accepting the handshake;
+- the supervisor sends host start, health, host stop, and worker shutdown requests and checks correlated replies while accepting worker-originated client-session lifecycle events;
 - the supervisor waits for and reaps the worker process;
-- after an injected worker failure during `session.start`, the supervisor retries with a fresh worker ID and generation, then replays the desired session start.
+- after an injected worker failure during `host.start`, the supervisor retries with a fresh worker ID and generation, then starts the host.
 
 The mock worker maintains an in-memory session set. Its subsystem health deliberately reports `not_implemented`; it does not claim that capture, encoding, input, or networking works.
 
@@ -29,25 +29,17 @@ The supervisor locates the selected worker beside its own executable. Build the 
 Expected log sequence includes:
 
 - `handshake complete`
-- `start_session` with state `running`
+- `start_host` with state `process_running`
 - `get_health` with worker state and explicit unimplemented subsystem states
-- `stop_session` with state `stopped`
+- `stop_host` with state `stopped`
 - `shutdown acknowledged`
 - worker process exit status
 
-## Process-agnostic session request
+## Host lifecycle and client sessions
 
-A `session.start` body contains desired stream intent: a display selector, codec, width, height, frame rate, and audio-enabled flag. The mock validates non-empty display selection and non-zero video dimensions/frame rate. It contains no capture-backend, encoder-backend, Syzygy class, or C++ layout fields. A future adapter translates this stable intent into its implementation-specific configuration.
+The worker IPC controls a host process, not an individual Moonlight client. `host.start` and `host.stop` carry no `session_id`; repeated start while running and stop while stopped are idempotent. Moonlight protocol activity creates and ends client sessions. The supervisor tracks worker-originated `session.started` and `session.stopped` events when their identity can be safely correlated.
 
-```json
-{
-  "display": "default",
-  "video": {"codec": "h264", "width": 1920, "height": 1080, "fps": 60},
-  "audio_enabled": false
-}
-```
-
-This schema describes a request contract only; the mock does not capture or stream media. The handshake also requires the worker to advertise start, stop, health, and shutdown support before the supervisor accepts it.
+The design draft's process-agnostic stream intent remains a candidate for a future user-facing desired-session API. It is not sent to the current Syzygy adapter because the audited CLI does not expose a verified mapping for display, codec, resolution, frame rate, and audio settings. The adapter reports that the stream is not ready rather than implying those values were applied. See [Syzygy worker adapter](SYZYGY-WORKER-ADAPTER.md) for evidence and remaining integration work.
 
 ## Request and session retry behavior
 
@@ -60,15 +52,15 @@ Worker-originated `session.started` and `session.stopped` events update an idemp
 
 ## Deliberate prototype limits
 
-- One worker and one demonstration session per run.
+- One worker and one host lifecycle demonstration per run.
 - `SOCK_STREAM` with newline-delimited JSON; this is a prototype choice, not the final transport decision.
 - 64 KiB maximum message size.
-- No external client API, heartbeat, peer-credential verification, durable request deduplication, or real media subsystem. Restart/backoff and desired-session replay are verified only with the mock worker; recovery of a real Syzygy worker and its sessions is not implemented.
+- No external client API, heartbeat, peer-credential verification, durable request deduplication, or real media subsystem. Restart/backoff and host restart are verified only with the mock worker; recovery of a real Syzygy worker and its client sessions is not implemented.
 - The mock remains the default; the Syzygy adapter is a Rust process owner around the existing C++ host, not a replacement streaming implementation.
 - No media payload crosses the control socket.
 
 ## Verification status
 
-GitHub Actions performs a workspace build, IPC envelope and lifecycle unit tests, a normal mock-worker smoke run, a fault-injected restart recovery run, and a Syzygy process-adapter run against a stub executable. The normal smoke run checks handshake, start, health, stop, shutdown acknowledgement, and child exit status 0. The restart test requires the first worker to fail during `session.start`, then checks retry logging, generation 2, and successful completion.
+GitHub Actions performs a workspace build, IPC envelope and lifecycle unit tests, a normal mock-worker smoke run, a fault-injected restart recovery run, and a Syzygy process-adapter run against a stub executable. The normal smoke run checks handshake, host start, health, host stop, shutdown acknowledgement, and child exit status 0. The restart test requires the first worker to fail during `host.start`, then checks retry logging, generation 2, and successful completion.
 
-CI now covers incompatible protocol versions, missing request IDs, stale worker generations, incorrect response types, request correlation, worker-originated session start/stop event ordering, malformed/oversized/truncated/disconnected IPC input, crash reaping, graceful exit, and SIGTERM-to-SIGKILL escalation. Duplicate request replay and session idempotency are covered by worker unit tests. Supervisor-loss cleanup, peer authentication, durable session recovery, integration against a built Syzygy binary, headless descendant cleanup, real Moonlight session behavior, and Fedora-host verification remain open.
+CI now covers incompatible protocol versions, missing request IDs, stale worker generations, incorrect response types, request correlation, worker-originated session start/stop event ordering, malformed/oversized/truncated/disconnected IPC input, crash reaping, graceful exit, and SIGTERM-to-SIGKILL escalation. Duplicate request replay and host lifecycle idempotency are covered by worker unit tests. Supervisor-loss cleanup, peer authentication, durable session recovery, integration against a built Syzygy binary, headless descendant cleanup, real Moonlight session behavior, and Fedora-host verification remain open.

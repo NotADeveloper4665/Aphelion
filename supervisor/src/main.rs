@@ -1,4 +1,4 @@
-use aphelion_supervisor::{message_identity_matches, missing_required_capabilities, protocol_version_supported, Message, RestartPolicy, SessionRegistry, SessionIntent, VideoCodec, VideoIntent, PROTOCOL_MAJOR, PROTOCOL_MINOR, MAX_MESSAGE_BYTES};
+use aphelion_supervisor::{message_identity_matches, missing_required_capabilities, protocol_version_supported, Message, RestartPolicy, SessionRegistry, PROTOCOL_MAJOR, PROTOCOL_MINOR, MAX_MESSAGE_BYTES};
 use serde_json::json;
 use std::{env, os::unix::fs::PermissionsExt, process::Stdio, time::Duration};
 use nix::{sys::signal::{kill, Signal}, unistd::Pid};
@@ -26,7 +26,6 @@ impl Drop for RuntimeDirectory {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let session_id = Uuid::new_v4().to_string();
     let runtime_dir = std::env::temp_dir().join(format!("aphelion-{}", Uuid::new_v4()));
     tokio::fs::create_dir(&runtime_dir).await?;
     let socket_path = runtime_dir.join("worker.sock");
@@ -70,7 +69,7 @@ async fn main() -> Result<()> {
             .kill_on_drop(true)
             .spawn()?;
 
-        let result = run_demo(&listener, &mut child, &worker_id, generation, &session_id).await;
+        let result = run_demo(&listener, &mut child, &worker_id, generation).await;
         let graceful_wait = if result.is_ok() {
             Duration::from_secs(2)
         } else {
@@ -108,7 +107,6 @@ async fn run_demo(
     child: &mut Child,
     worker_id: &str,
     generation: u64,
-    session_id: &str,
 ) -> Result<()> {
     let (stream, _) = timeout(Duration::from_secs(5), listener.accept()).await??;
     println!("supervisor: worker connected; validating handshake");
@@ -138,15 +136,11 @@ async fn run_demo(
 
     let mut sessions = SessionRegistry::default();
     let start_id = Uuid::new_v4().to_string();
-    let start = Message::new("request", "session.start", worker_id, generation,
-        Some(start_id.clone()), Some(session_id.to_owned()), serde_json::to_value(SessionIntent {
-            display: "default".to_owned(),
-            video: VideoIntent { codec: VideoCodec::H264, width: 1920, height: 1080, fps: 60 },
-            audio_enabled: false,
-        })?);
+    let start = Message::new("request", "host.start", worker_id, generation,
+        Some(start_id.clone()), None, json!({}));
     send_message(&mut write, &start).await?;
-    let started = read_correlated_response(&mut reader, worker_id, generation, &start_id, "session.start", &mut sessions).await?;
-    println!("supervisor: start_session => {}", started.body);
+    let started = read_correlated_response(&mut reader, worker_id, generation, &start_id, "host.start", &mut sessions).await?;
+    println!("supervisor: start_host => {}", started.body);
 
     let health_id = Uuid::new_v4().to_string();
     let health = Message::new("request", "worker.health", worker_id, generation,
@@ -156,11 +150,11 @@ async fn run_demo(
     println!("supervisor: get_health => {}", health_result.body);
 
     let stop_id = Uuid::new_v4().to_string();
-    let stop = Message::new("request", "session.stop", worker_id, generation,
-        Some(stop_id.clone()), Some(session_id.to_owned()), json!({}));
+    let stop = Message::new("request", "host.stop", worker_id, generation,
+        Some(stop_id.clone()), None, json!({}));
     send_message(&mut write, &stop).await?;
-    let stopped = read_correlated_response(&mut reader, worker_id, generation, &stop_id, "session.stop", &mut sessions).await?;
-    println!("supervisor: stop_session => {}", stopped.body);
+    let stopped = read_correlated_response(&mut reader, worker_id, generation, &stop_id, "host.stop", &mut sessions).await?;
+    println!("supervisor: stop_host => {}", stopped.body);
 
     let shutdown_id = Uuid::new_v4().to_string();
     let shutdown = Message::new("request", "worker.shutdown", worker_id, generation,

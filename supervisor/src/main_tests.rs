@@ -5,7 +5,7 @@ use tokio::io::AsyncWriteExt;
 fn valid_response() -> Message {
     Message::new(
         "response",
-        "session.start",
+        "host.start",
         "worker-a",
         7,
         Some("request-a".to_owned()),
@@ -18,20 +18,20 @@ fn valid_response() -> Message {
 fn response_validation_rejects_incompatible_protocol_version() {
     let mut response = valid_response();
     response.protocol.major += 1;
-    assert!(validate_response(&response, "worker-a", 7, "request-a", "session.start").is_err());
+    assert!(validate_response(&response, "worker-a", 7, "request-a", "host.start").is_err());
 }
 
 #[test]
 fn response_validation_rejects_missing_request_id() {
     let mut response = valid_response();
     response.request_id = None;
-    assert!(validate_response(&response, "worker-a", 7, "request-a", "session.start").is_err());
+    assert!(validate_response(&response, "worker-a", 7, "request-a", "host.start").is_err());
 }
 
 #[test]
 fn response_validation_rejects_stale_worker_generation() {
     let response = valid_response();
-    assert!(validate_response(&response, "worker-a", 6, "request-a", "session.start").is_err());
+    assert!(validate_response(&response, "worker-a", 6, "request-a", "host.start").is_err());
 }
 
 #[test]
@@ -44,7 +44,7 @@ fn response_validation_rejects_incorrect_response_type() {
 fn response_validation_rejects_uncorrelated_request_id() {
     let mut response = valid_response();
     response.request_id = Some("request-b".to_owned());
-    assert!(validate_response(&response, "worker-a", 7, "request-a", "session.start").is_err());
+    assert!(validate_response(&response, "worker-a", 7, "request-a", "host.start").is_err());
 }
 
 async fn read_wire_message(bytes: Vec<u8>) -> Result<Message> {

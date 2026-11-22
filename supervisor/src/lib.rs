@@ -107,8 +107,8 @@ impl SessionRegistry {
 }
 
 pub const REQUIRED_WORKER_CAPABILITIES: [&str; 4] = [
-    "session.start",
-    "session.stop",
+    "host.start",
+    "host.stop",
     "worker.health",
     "worker.shutdown",
 ];
@@ -316,13 +316,13 @@ mod tests {
 
     #[test]
     fn worker_capability_handshake_requires_all_lifecycle_commands() {
-        let available = serde_json::json!(["session.start", "session.stop", "worker.health", "worker.shutdown"]);
+        let available = serde_json::json!(["host.start", "host.stop", "worker.health", "worker.shutdown"]);
         assert!(missing_required_capabilities(&available).is_empty());
 
-        let incomplete = serde_json::json!(["session.start", "worker.health"]);
+        let incomplete = serde_json::json!(["host.start", "worker.health"]);
         assert_eq!(
             missing_required_capabilities(&incomplete),
-            vec!["session.stop", "worker.shutdown"]
+            vec!["host.stop", "worker.shutdown"]
         );
         assert_eq!(
             missing_required_capabilities(&serde_json::Value::Null),

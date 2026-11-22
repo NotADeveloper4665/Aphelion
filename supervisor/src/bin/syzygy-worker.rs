@@ -1,5 +1,5 @@
 use aphelion_supervisor::{
-    protocol_version_supported, Message, SessionIntent,
+    protocol_version_supported, Message,
     MAX_MESSAGE_BYTES,
 };
 use serde_json::{json, Value};
@@ -48,24 +48,19 @@ async fn run() -> Result<()> {
 
     let mut child: Option<ManagedChild> = None;
     let client_session_count = Arc::new(AtomicUsize::new(0));
-    let mut managed_session: Option<String> = None;
     let mut last_exit: Option<Value> = None;
 
     loop {
         if let Some(current) = child.as_mut() {
             if let Some(status) = current.child.try_wait()? {
-                let was_managed = managed_session.is_some();
                 last_exit = Some(json!({
                     "success": status.success(),
                     "code": status.code(),
                     "signal": status.signal(),
                 }));
                 child = None;
-                managed_session = None;
                 client_session_count.store(0, Ordering::Relaxed);
-                if was_managed {
-                    return Err("managed Syzygy host process exited unexpectedly".into());
-                }
+                return Err("managed Syzygy host process exited unexpectedly".into());
             }
         }
 
@@ -73,21 +68,14 @@ async fn run() -> Result<()> {
         validate_request(&request, &worker_id, generation)?;
 
         match request.message_type.as_str() {
-            "session.start" => {
-                let session_id = required_session_id(&request)?;
-                let intent: SessionIntent = serde_json::from_value(request.body.clone())?;
-                intent.validate().map_err(|error| error.to_owned())?;
-
-                let response_body = if let Some(current_session) = managed_session.as_deref() {
-                    if current_session != session_id {
-                        return Err("Syzygy worker supports one host process; another session is already managed".into());
-                    }
+            "host.start" => {
+                reject_session_id(&request)?;
+                let response_body = if child.is_some() {
                     json!({
                         "ok": true,
                         "state": "process_running",
                         "already_running": true,
                         "stream_ready": false,
-                        "intent_applied": false,
                         "process_id": child.as_ref().and_then(ManagedChild::id),
                     })
                 } else {
@@ -100,32 +88,23 @@ async fn run() -> Result<()> {
                     }
                     let process_id = spawned.child.id();
                     child = Some(spawned);
-                    managed_session = Some(session_id.to_owned());
                     last_exit = None;
                     json!({
                         "ok": true,
                         "state": "process_started",
                         "already_running": false,
                         "stream_ready": false,
-                        "intent_applied": false,
-                        "requested_intent": intent,
                         "process_id": process_id,
                     })
                 };
                 send_response(&mut writer, &request, &worker_id, generation, response_body).await?;
             }
-            "session.stop" => {
-                let session_id = required_session_id(&request)?;
-                if let Some(current_session) = managed_session.as_deref() {
-                    if current_session != session_id {
-                        return Err("session.stop does not match the managed host session".into());
-                    }
-                }
+            "host.stop" => {
+                reject_session_id(&request)?;
                 let was_running = child.is_some();
                 if let Some(mut process) = child.take() {
                     stop_process(&mut process).await?;
                 }
-                managed_session = None;
                 client_session_count.store(0, Ordering::Relaxed);
                 send_response(
                     &mut writer,
@@ -146,19 +125,14 @@ async fn run() -> Result<()> {
                     match process.child.try_wait()? {
                         None => true,
                         Some(status) => {
-                            let was_managed = managed_session.is_some();
                             last_exit = Some(json!({
                                 "success": status.success(),
                                 "code": status.code(),
                                 "signal": status.signal(),
                             }));
                             child = None;
-                            managed_session = None;
                             client_session_count.store(0, Ordering::Relaxed);
-                            if was_managed {
-                                return Err("managed Syzygy host process exited unexpectedly".into());
-                            }
-                            false
+                            return Err("managed Syzygy host process exited unexpectedly".into());
                         }
                     }
                 } else {
@@ -173,7 +147,6 @@ async fn run() -> Result<()> {
                         "state": if running { "process_running" } else { "stopped" },
                         "process_running": running,
                         "process_id": child.as_ref().and_then(ManagedChild::id),
-                        "managed_session": managed_session,
                         "last_exit": last_exit,
                         "stream_ready": false,
                         "client_session_count": client_session_count.load(Ordering::Relaxed),
@@ -359,7 +332,7 @@ where
             json!({
                 "build": env!("CARGO_PKG_NAME").to_owned() + "/" + env!("CARGO_PKG_VERSION"),
                 "adapter": "syzygy-foreground-process",
-                "capabilities": ["session.start", "session.stop", "worker.health", "worker.shutdown"]
+                "capabilities": ["host.start", "host.stop", "worker.health", "worker.shutdown"]
             }),
         ),
     )
@@ -393,10 +366,11 @@ fn validate_request(request: &Message, worker_id: &str, generation: u64) -> Resu
     Ok(())
 }
 
-fn required_session_id(request: &Message) -> Result<&str> {
-    request.session_id.as_deref()
-        .filter(|id| !id.trim().is_empty())
-        .ok_or_else(|| "session request requires a non-empty session_id".into())
+fn reject_session_id(request: &Message) -> Result<()> {
+    if request.session_id.is_some() {
+        return Err("host lifecycle request must not include session_id".into());
+    }
+    Ok(())
 }
 
 async fn send_response<W: AsyncWrite + Unpin>(
@@ -488,6 +462,23 @@ mod tests {
         sleep(Duration::from_millis(400)).await;
         assert!(!marker.exists(), "descendant in the worker process group must be killed");
         tokio::fs::remove_dir_all(directory).await.expect("remove test directory");
+    }
+
+    #[test]
+    fn host_lifecycle_rejects_client_session_identity() {
+        let request = Message::new(
+            "request",
+            "host.start",
+            "worker-a",
+            1,
+            Some("request-a".to_owned()),
+            Some("session-a".to_owned()),
+            json!({}),
+        );
+        assert!(reject_session_id(&request)
+            .unwrap_err()
+            .to_string()
+            .contains("must not include session_id"));
     }
 
     #[test]

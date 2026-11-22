@@ -32,14 +32,14 @@ AI-assisted contributions are acceptable. Judge code by correctness, security, p
 
 Milestone 1 uses a Rust supervisor and a Thick Worker that retains the complete existing Syzygy streaming path.
 
-- **Aphelion supervisor (Rust):** Configuration, desired session state, worker lifecycle, health polling, process monitoring, and local control API.
+- **Aphelion supervisor (Rust):** Configuration, desired host state, worker lifecycle, observed client-session state, health polling, process monitoring, and local control API.
 - **Thick Worker (existing Syzygy C++ implementation):** Capture, encoding, audio, input, Moonlight protocol handling, packetization, FEC, encryption, and network transmission.
 - **Control IPC:** Local Unix-domain socket carrying versioned control messages and health responses.
 - **Media path:** Remains inside the worker. No video, audio, encoded bitstream, or frame-buffer payload crosses the control socket in Milestone 1.
 
 This is a compatibility-preserving boundary. Syzygy's current video broadcast path couples encoded packet handling with codec parameter-set handling, FEC, RTP/Moonlight headers, per-session encryption, and batched network transmission. Splitting there immediately would force a protocol/network rewrite. The Thick Worker avoids that premature split.
 
-The supervisor must not depend on Syzygy C++ structures or internal implementation details. Its contract describes desired streaming behavior and observable health, not the worker's internal topology.
+The supervisor must not depend on Syzygy C++ structures or internal implementation details. Its contract describes desired host behavior and observable client-session/health state, not the worker's internal topology. The worker IPC lifecycle is host-scoped; Moonlight client-session lifecycle is initiated by client protocol activity and reported as worker-originated events. A host start request must not masquerade as a client session start.
 
 ### Worker granularity and initial profile policy
 
@@ -59,7 +59,7 @@ The API describes **what the user wants**, not which internal process performs i
 
 Every request and response includes an API version and request identifier. Unsupported versions and invalid requests fail clearly. Define idempotency and duplicate-request behavior before relying on retries.
 
-Illustrative shape, not a finalized schema:
+Illustrative shape of a possible future user-facing desired-session API, not the current worker IPC schema:
 
 ```json
 {
@@ -79,12 +79,12 @@ Illustrative shape, not a finalized schema:
 }
 ```
 
-Initial command families:
-- start_session
-- stop_session
-- get_health
+The current worker IPC command families are:
+- `host.start` — start the Moonlight-compatible host process; idempotent while running.
+- `host.stop` — stop that host process; idempotent while stopped.
+- `worker.health` and `worker.shutdown` — report lifecycle/observed health and terminate the worker.
 
-Add commands only for concrete lifecycle or operational needs. Internal topology changes should not require an external API redesign.
+A future local user-facing API may expose desired streaming configuration, but it must not claim to start or stop an individual Moonlight client unless the worker has a tested control bridge for that operation. Moonlight client sessions are created and ended by protocol activity; the worker reports observed `session.started` / `session.stopped` events with worker-generation-scoped IDs where correlation is safe. Add commands only for concrete lifecycle or operational needs. Internal topology changes should not require an external API redesign.
 
 ### 4.2 Subsystem-mirrored health
 
@@ -184,13 +184,13 @@ These are mandatory architecture reviews, not automatic rewrite triggers. Each r
 
 ### Milestone 1 — Thick Worker supervisor
 - Build a Rust supervisor that launches and monitors the existing worker.
-- Implement versioned, process-agnostic start_session, stop_session, and get_health.
+- Implement versioned, process-agnostic host.start, host.stop, worker.health, and worker.shutdown IPC. Treat Moonlight client sessions as worker-observed lifecycle events until a tested per-client control bridge exists.
 - Keep all media and Moonlight protocol work inside the worker.
 - Add subsystem health with honest unavailable values.
 - Implement bounded restart/backoff, clean shutdown, socket cleanup, and useful logs.
 - Test worker crashes, supervisor restarts, malformed messages, duplicate requests, and resource cleanup.
 
-**Exit:** A real stream starts and stops through the supervisor; health is observable; failures are contained; Moonlight compatibility is not regressed.
+**Exit:** The supervisor starts and stops the real host process; a Moonlight client can establish and end a real stream through the existing protocol path; health distinguishes host lifecycle from observed client sessions; failures are contained; Moonlight compatibility is not regressed. Do not claim that `host.stop` stops one client independently.
 
 ### Milestone 2 — Reliability and observability
 - Improve metrics based on measurements available from the implementation.
@@ -246,11 +246,15 @@ Later candidates include multi-profile encoding, independent gateways, additiona
 | No media payload crosses Milestone 1 control IPC | Invariant |
 | Control schema is versioned and process-agnostic | Invariant |
 | Health mirrors subsystem boundaries and reports only real measurements | Invariant |
-| session_id identifies a logical session, not a process | Invariant |
+| session_id identifies a logical client session, not a worker or host process | Invariant |
+| Worker IPC host lifecycle is distinct from Moonlight client-session lifecycle | Accepted based on the pinned Syzygy source audit; the initial illustrative per-session worker commands were not supported by Syzygy's current interface |
+| A per-client start/stop command requires a tested control bridge; until then client sessions are protocol-driven and observed as events | Invariant |
 | SOCK_SEQPACKET is the selected control transport | Provisional; prototype first |
 | IPC supports future SCM_RIGHTS if needed | Design requirement to validate |
 | Preserve verified shared-capture and per-session encoder behavior; defer generalized shared-encoder fan-out | Audit-led initial direction |
 | Gamescope capture or custom PipeWire audio is the universal path | Not accepted; research required |
 | Thick Worker extraction follows documented architecture gates | Accepted |
+
+The host/client lifecycle split updates the original illustrative `start_session` / `stop_session` worker commands. Evidence: the pinned Syzygy source audit at `c50d417c774320632cbe6fa6fc1f1a6bdfc8c58d` found Moonlight protocol handlers create client sessions and no existing control socket accepts per-client start/stop commands. The current adapter can own the host process and observe session log activity, but has no verified mapping for the initial stream-intent fields. This changes the Milestone 1 worker IPC boundary; it preserves Moonlight pairing and streaming behavior and leaves any separate local desired-session API provisional until its semantics can be exercised against the worker.
 
 **Document rule:** Update this document when a decision changes. Record why it changed, what evidence supports it, and which compatibility or migration assumptions are affected. Do not silently turn provisional choices into permanent requirements.
