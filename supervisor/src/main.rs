@@ -305,9 +305,10 @@ mod tests {
     #[tokio::test]
     async fn ipc_reader_rejects_malformed_json() {
         let (mut writer, reader) = tokio::io::duplex(64);
-        writer.write_all(b"not-json\\n").await.expect("write malformed frame");
+        writer.write_all(b"not-json\n").await.expect("write malformed frame");
+        writer.shutdown().await.expect("close malformed frame writer");
         let result = read_message(&mut BufReader::new(reader)).await;
-        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("expected value"));
     }
 
     #[tokio::test]
