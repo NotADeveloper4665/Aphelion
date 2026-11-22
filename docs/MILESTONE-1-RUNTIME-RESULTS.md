@@ -17,11 +17,21 @@ This confirms the first real client connection and active stream through the sup
 
 ## Remaining acceptance work
 
-- Current adapter shutdown invokes `-stop` on the configured Syzygy binary, then signals and reaps the foreground process group. CI verifies this order with a stub; it still needs confirmation against the real Syzygy binary on the target host.
-- Capture the supervisor's observed `Stopped` event when the Moonlight client disconnects, then verify a clean host shutdown.
+- Current adapter shutdown invokes `-stop` on the configured Syzygy binary, then signals and reaps the foreground process group. GitHub Actions now sends SIGINT and verifies this sequence with a stub. The real Syzygy shutdown path remains unconfirmed on the target host.
+- The later runtime attempt observed the supervisor's `Stopped` event when the Moonlight client disconnected, but the user then terminated matching processes by name; that is manual cleanup, not a graceful-shutdown result.
 - Repeat connection and disconnect cycles and check for orphan processes or stuck sessions.
 - Compare the same Syzygy configuration when launched directly and through Aphelion for behavior regressions.
 - Record the exact Syzygy revision, host configuration, capture path, and encoder details for a reproducible result.
 - Complete the remaining Milestone 0 baseline rows; this smoke test does not establish the pinned baseline, hardware matrix, performance results, or long-run reliability.
 
 Milestone 1 has passed its first real-stream smoke check, but its full exit criteria are not yet met.
+
+## Follow-up runtime attempt
+
+**Observed:** 2026-11-22, from the maintainer-provided terminal output and clarification.  
+**Aphelion bundle:** commit `d88766f89ebffa83438663badb6c0ae305b3d2ca`.  
+**Syzygy:** version `0.0.9`, commit `2f1fb5ea140ab517fc7413655e9d0b3076d3c825`.
+
+The phone connected and streamed at 1920x1080 using `hevc_nvenc`; Syzygy initialized PipeWire/Opus audio. Aphelion observed the client `Started` and `Stopped` events. Syzygy reported screen-cast-only portal mode after device selection failed, so input behavior was not established. The user stopped remaining matching processes with a name-based kill command after the run. The terminal output did not establish that Ctrl+C caused Aphelion's graceful shutdown path or that all descendants were reaped by the supervisor.
+
+This confirms streaming and client-disconnect observation through the managed host. It does not confirm clean real-host shutdown. GitHub Actions verifies the SIGINT shutdown sequence against a stub process; the next target-host check should stop Aphelion with Ctrl+C and inspect whether any Syzygy process remains.
