@@ -24,6 +24,7 @@ type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>
 
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
 const SYZYGY_STOP_COMMAND_TIMEOUT: Duration = Duration::from_secs(12);
+const IPC_MESSAGE_TIMEOUT: Duration = Duration::from_secs(20);
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -633,7 +634,7 @@ async fn send_message<W: AsyncWrite + Unpin>(writer: &mut W, message: &Message) 
 async fn read_message<R: AsyncBufReadExt + Unpin>(reader: &mut R) -> Result<Message> {
     let mut line = Vec::new();
     let mut limited = reader.take((MAX_MESSAGE_BYTES + 1) as u64);
-    let count = timeout(Duration::from_secs(5), limited.read_until(b'\n', &mut line)).await??;
+    let count = timeout(IPC_MESSAGE_TIMEOUT, limited.read_until(b'\n', &mut line)).await??;
     if count == 0 {
         return Err("supervisor disconnected".into());
     }
