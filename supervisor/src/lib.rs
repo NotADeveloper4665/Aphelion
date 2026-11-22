@@ -66,6 +66,9 @@ pub enum SessionTransition {
 #[derive(Debug, Default)]
 pub struct SessionRegistry {
     active: HashSet<String>,
+    started_total: u64,
+    stopped_total: u64,
+    peak_active: usize,
 }
 
 impl SessionRegistry {
@@ -79,11 +82,18 @@ impl SessionRegistry {
             "session.started" => {
                 let session_id = Self::session_id(message)?;
                 let newly_active = self.active.insert(session_id.clone());
+                if newly_active {
+                    self.started_total = self.started_total.saturating_add(1);
+                    self.peak_active = self.peak_active.max(self.active.len());
+                }
                 Ok(Some(SessionTransition::Started { session_id, newly_active }))
             }
             "session.stopped" => {
                 let session_id = Self::session_id(message)?;
                 let was_active = self.active.remove(&session_id);
+                if was_active {
+                    self.stopped_total = self.stopped_total.saturating_add(1);
+                }
                 Ok(Some(SessionTransition::Stopped { session_id, was_active }))
             }
             _ => Ok(None),
@@ -103,6 +113,18 @@ impl SessionRegistry {
 
     pub fn active_count(&self) -> usize {
         self.active.len()
+    }
+
+    pub fn started_total(&self) -> u64 {
+        self.started_total
+    }
+
+    pub fn stopped_total(&self) -> u64 {
+        self.stopped_total
+    }
+
+    pub fn peak_active(&self) -> usize {
+        self.peak_active
     }
 }
 
@@ -398,6 +420,8 @@ mod tests {
             session_id: "session-a".to_owned(),
             newly_active: false,
         });
+        assert_eq!(sessions.started_total(), 1, "duplicate starts are idempotent");
+        assert_eq!(sessions.peak_active(), 1);
 
         let stopped = sessions.apply_event(&event("session.stopped", "session-a"))
             .expect("stop event").expect("known event");
@@ -406,6 +430,15 @@ mod tests {
             was_active: true,
         });
         assert_eq!(sessions.active_count(), 0);
+        assert_eq!(sessions.stopped_total(), 1);
+
+        let repeated_stop = sessions.apply_event(&event("session.stopped", "session-a"))
+            .expect("duplicate stop event").expect("known event");
+        assert_eq!(repeated_stop, SessionTransition::Stopped {
+            session_id: "session-a".to_owned(),
+            was_active: false,
+        });
+        assert_eq!(sessions.stopped_total(), 1, "duplicate stops are idempotent");
     }
 
     #[test]

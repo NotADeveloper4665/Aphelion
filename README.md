@@ -2,7 +2,7 @@
 
 Aphelion is an independently developed, local-first Linux game-streaming host. It selectively inherits and progressively replaces components from Syzygy while maintaining a separate project, roadmap, and release lifecycle.
 
-**Project status:** CI-verified Rust control-plane prototype with bounded worker restart/backoff and versioned local IPC. The maintainer has observed a real phone Moonlight stream and a successful Ctrl+C stop through the supervisor-managed Syzygy process. Aphelion still delegates all media handling to Syzygy; descendant cleanup was not independently checked with a process-list snapshot.
+**Project status:** CI-verified Rust control-plane prototype with bounded worker restart/backoff, structured lifecycle diagnostics, bounded control-health RTT reporting, and versioned local IPC. A real phone Moonlight stream and a successful Ctrl+C stop through the supervisor-managed Syzygy process were observed by the maintainer. Aphelion still delegates all media handling to Syzygy; Milestone 2 media measurements and repeated target-host acceptance remain open.
 
 ## Initial direction
 
@@ -17,11 +17,11 @@ Aphelion is an independently developed, local-first Linux game-streaming host. I
 
 The executable Milestone 1 slice is on the [`prototype/rust-control-plane`](https://github.com/NotADeveloper4665/Aphelion/tree/prototype/rust-control-plane) branch. It builds a Rust supervisor, a mock-worker, and a separate Syzygy process adapter that exchange versioned JSON over a local Unix socket. The supervisor bounds worker restarts with exponential backoff, validates worker identity and response correlation, and cleans up child processes. Exact request retries replay their cached response; host start and stop remain idempotent, while Moonlight client sessions are observed as worker-originated events. See [build and run instructions](docs/CONTROL-PLANE-PROTOTYPE.md).
 
-The Syzygy adapter can launch and stop an existing Syzygy binary and report process health, measured host uptime, observed client counts from Syzygy logs, and separate subsystem telemetry states. It does not modify Syzygy or claim stream readiness, apply unverified stream settings, or implement media handling inside Aphelion. See the adapter boundary document for current limits.
+The Syzygy adapter can launch and stop an existing Syzygy binary and report process health, measured host uptime, observed client counts from Syzygy logs, and separate subsystem telemetry states. The supervisor summarizes idempotent client-session lifecycle counts and bounded health-IPC round-trip measurements. These are control-plane signals, not stream latency. The adapter does not modify Syzygy or claim stream readiness, apply unverified stream settings, or implement media handling inside Aphelion. See the adapter boundary document for current limits.
 
 The Actions workflow also produces a temporary Linux x86_64 prototype bundle on successful branch pushes. See [runtime prototype instructions](docs/PROTOTYPE-RUNTIME-TEST.md) for download and first-run steps. One Fedora desktop run confirmed a real Moonlight stream and Ctrl+C shutdown; broader hardware, repeated real-client lifecycle, input, and direct-versus-managed regression coverage remain pending.
 
-The maintainer-observed Moonlight stream, disconnect, and Ctrl+C shutdown are recorded in [Milestone 1 runtime results](docs/MILESTONE-1-RUNTIME-RESULTS.md). Real subsystem measurements, repeated real-client/orphan checks, direct-versus-managed comparison, and the incomplete Milestone 0 baseline remain open. The adapter reports honest unavailable states, and CI covers repeated lifecycle cleanup with a stub.
+The maintainer-observed Moonlight stream, disconnect, and Ctrl+C shutdown are recorded in [Milestone 1 runtime results](docs/MILESTONE-1-RUNTIME-RESULTS.md). Milestone 2 software observability and stubbed restart/recovery checks are in place. Real media telemetry, profile-combination support, repeated real-client/orphan checks, direct-versus-managed comparison, and the incomplete Milestone 0 baseline remain open. The adapter reports honest unavailable states, and CI covers repeated lifecycle cleanup with a stub.
 
 ## Architecture documents
 

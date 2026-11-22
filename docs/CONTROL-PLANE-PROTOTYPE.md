@@ -1,6 +1,6 @@
 # Rust control-plane prototype
 
-**Status:** CI-verified supervisor, mock worker, and Syzygy process adapter. A real Moonlight stream and one successful Ctrl+C stop were reported on Fedora; broader hardware and lifecycle verification remain open.
+**Status:** CI-verified supervisor, mock worker, and Syzygy process adapter. A real Moonlight stream and one successful Ctrl+C stop were reported on Fedora. Milestone 2's control-plane observability and stubbed recovery slice is implemented; repeat real-client, measured media-path, and target-hardware acceptance remain open.
 
 This prototype proves a narrow Milestone 1 slice without modifying or building Syzygy:
 
@@ -68,4 +68,8 @@ CI now covers incompatible protocol versions, missing request IDs, stale worker 
 
 ## Milestone 2 observability start
 
-The Syzygy adapter now reports health schema version, observation time, measured host-process uptime, client-session count with its log-derived source, and explicit per-subsystem telemetry availability. Real capture/encoder/audio/input/network metrics remain unavailable until Syzygy exposes structured signals with defined semantics. GitHub Actions repeats a managed-host start/stop cycle three times with a stub and checks that the owned process and delayed descendant do not survive shutdown; real Moonlight repeat-cycle and direct-versus-managed comparisons remain target-host work.
+The Syzygy adapter reports health schema version, observation time, measured host-process uptime, client-session count with its log-derived source, and explicit per-subsystem telemetry availability. The supervisor reports client-session start/stop totals, peak concurrency, and a bounded 120-sample health-IPC round-trip window with min/p50/p95/max in microseconds. Restart diagnostics include failed/next worker generations, retry budget, delay, and failure reason. These metrics measure only local control-plane responsiveness and observed lifecycle events; they are not stream latency or media quality.
+
+Compatibility behavior is deliberately conservative: host start/stop are host-scoped and idempotent; duplicate client start/stop events do not inflate counts; an adapter response always leaves `stream_ready=false` because the audited Syzygy CLI has no verified mapping for Aphelion's display/codec/resolution/frame-rate/audio intent. No requested profile is claimed as applied. CI exercises this behavior with a stub and repeats managed-host lifecycle cleanup, but does not establish the supported simultaneous Moonlight profile matrix.
+
+Do not add a synthetic media queue or stale-frame policy while the video path, queue age, and frame deadlines remain inside Syzygy and are not exposed at an Aphelion boundary. Media metrics, profile-combination compatibility, direct-versus-managed regression comparison, repeated real-client recovery, and host-specific latency/reliability measurements remain Milestone 2 acceptance gates. Those require real Syzygy builds and target hardware; a green GitHub run alone does not complete them.

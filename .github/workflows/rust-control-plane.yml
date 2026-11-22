@@ -31,6 +31,9 @@ jobs:
           printf '%s\n' "$output"
           grep -Fq "injected failure during host.start" <<<"$output"
           grep -Fq "retry 1/3" <<<"$output"
+          grep -Fq '"retry":1' <<<"$output"
+          grep -Fq '"failed_generation":1' <<<"$output"
+          grep -Fq '"next_generation":2' <<<"$output"
           grep -Fq "starting worker generation 2" <<<"$output"
           grep -Fq "start_host =>" <<<"$output"
           grep -Fq "stop_host =>" <<<"$output"
@@ -57,6 +60,7 @@ jobs:
           }
           printf '%s\n' "$output"
           grep -Fq '"state":"process_started"' <<<"$output"
+          grep -Fq '"stream_ready":false' <<<"$output"
           grep -Fq '"process_running":true' <<<"$output"
           grep -Fq '"client_session_count":1' <<<"$output"
           grep -Fq 'observed worker event Started' <<<"$output"
@@ -256,6 +260,11 @@ jobs:
           test "$(wc -l < "$stop_command_log")" -ge 3
           grep -Fq 'observed worker event Started' "$output_file"
           grep -Fq 'observed worker event Stopped' "$output_file"
+          grep -Fq '"started_total":1' "$output_file"
+          grep -Fq '"stopped_total":1' "$output_file"
+          grep -Fq '"active_at_shutdown":0' "$output_file"
+          grep -Fq '"source":"supervisor.worker_health_ipc_round_trip"' "$output_file"
+          grep -Fq '"window_samples":' "$output_file"
           ! grep -Fq 'client-token' "$output_file"
 
       - name: Repeat managed-host lifecycle and verify process cleanup

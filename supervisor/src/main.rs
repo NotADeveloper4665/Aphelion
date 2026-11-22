@@ -1,6 +1,6 @@
 use aphelion_supervisor::{message_identity_matches, missing_required_capabilities, protocol_version_supported, Message, RestartPolicy, SessionRegistry, PROTOCOL_MAJOR, PROTOCOL_MINOR, MAX_MESSAGE_BYTES};
-use serde_json::json;
-use std::{env, os::unix::fs::PermissionsExt, process::Stdio, time::Duration};
+use serde_json::{json, Value};
+use std::{collections::VecDeque, env, os::unix::fs::PermissionsExt, process::Stdio, time::Duration};
 use nix::{sys::signal::{killpg, Signal}, unistd::Pid};
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
@@ -13,6 +13,48 @@ use uuid::Uuid;
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 const IPC_MESSAGE_TIMEOUT: Duration = Duration::from_secs(20);
+const HEALTH_RTT_WINDOW_CAPACITY: usize = 120;
+
+#[derive(Debug, Default)]
+struct HealthRttWindow {
+    samples_us: VecDeque<u64>,
+    total_samples: u64,
+}
+
+impl HealthRttWindow {
+    fn record(&mut self, elapsed: Duration) {
+        let micros = elapsed.as_micros().min(u64::MAX as u128) as u64;
+        if self.samples_us.len() == HEALTH_RTT_WINDOW_CAPACITY {
+            self.samples_us.pop_front();
+        }
+        self.samples_us.push_back(micros);
+        self.total_samples = self.total_samples.saturating_add(1);
+    }
+
+    fn percentile(sorted: &[u64], percentile: usize) -> Option<u64> {
+        if sorted.is_empty() {
+            return None;
+        }
+        let rank = (sorted.len() * percentile).saturating_add(99) / 100;
+        sorted.get(rank.saturating_sub(1)).copied()
+    }
+
+    fn summary(&self) -> Value {
+        let mut sorted: Vec<_> = self.samples_us.iter().copied().collect();
+        sorted.sort_unstable();
+        json!({
+            "source": "supervisor.worker_health_ipc_round_trip",
+            "unit": "microseconds",
+            "window_capacity": HEALTH_RTT_WINDOW_CAPACITY,
+            "window_samples": sorted.len(),
+            "total_samples": self.total_samples,
+            "min": sorted.first().copied(),
+            "p50": Self::percentile(&sorted, 50),
+            "p95": Self::percentile(&sorted, 95),
+            "max": sorted.last().copied(),
+        })
+    }
+}
 
 struct RuntimeDirectory {
     directory: std::path::PathBuf,
@@ -99,8 +141,17 @@ async fn main() -> Result<()> {
             return Err(format!("worker restart budget exhausted after {restarts} retries: {failure}").into());
         };
 
+        let failed_generation = generation;
         restarts += 1;
         generation = generation.checked_add(1).ok_or("worker generation exhausted")?;
+        println!("supervisor: worker restart => {}", json!({
+            "retry": restarts,
+            "retry_limit": policy.max_restarts,
+            "failed_generation": failed_generation,
+            "next_generation": generation,
+            "backoff_ms": delay.as_millis(),
+            "reason": failure,
+        }));
         println!(
             "supervisor: worker failed ({failure}); retry {restarts}/{} in {} ms",
             policy.max_restarts,
@@ -152,11 +203,14 @@ async fn run_serve(
     let started = read_correlated_response(&mut reader, worker_id, generation, &start_id, "host.start", &mut sessions).await?;
     println!("supervisor: start_host => {}", started.body);
 
+    let mut health_rtt = HealthRttWindow::default();
     let health_id = Uuid::new_v4().to_string();
     let health = Message::new("request", "worker.health", worker_id, generation,
         Some(health_id.clone()), None, json!({}));
+    let health_started = std::time::Instant::now();
     send_message(&mut write, &health).await?;
     let health_result = read_correlated_response(&mut reader, worker_id, generation, &health_id, "worker.health", &mut sessions).await?;
+    health_rtt.record(health_started.elapsed());
     println!("supervisor: host is running; connect with a Moonlight client");
     println!("supervisor: initial health => {}", health_result.body);
 
@@ -179,10 +233,12 @@ async fn run_serve(
                 let request_id = Uuid::new_v4().to_string();
                 let request = Message::new("request", "worker.health", worker_id, generation,
                     Some(request_id.clone()), None, json!({}));
+                let health_started = std::time::Instant::now();
                 send_message(&mut write, &request).await?;
                 let health = read_correlated_response(
                     &mut reader, worker_id, generation, &request_id, "worker.health", &mut sessions,
                 ).await?;
+                health_rtt.record(health_started.elapsed());
                 println!("supervisor: health => {}", health.body);
             }
             incoming = read_message(&mut reader) => {
@@ -216,6 +272,13 @@ async fn run_serve(
         &mut reader, worker_id, generation, &shutdown_id, "worker.shutdown", &mut sessions,
     ).await?;
     println!("supervisor: shutdown acknowledged; waiting for child exit");
+    println!("supervisor: client session lifecycle summary => {}", json!({
+        "active_at_shutdown": sessions.active_count(),
+        "started_total": sessions.started_total(),
+        "stopped_total": sessions.stopped_total(),
+        "peak_active": sessions.peak_active(),
+    }));
+    println!("supervisor: control health RTT summary => {}", health_rtt.summary());
     drop(write);
     drop(reader);
     let _ = child;
@@ -514,6 +577,32 @@ mod tests {
             .expect("reap forced child");
         assert!(!status.success(), "SIGKILL termination must be non-zero");
         assert!(child.id().is_none(), "child must be reaped after SIGKILL");
+    }
+
+    #[test]
+    fn health_rtt_window_reports_nearest_rank_percentiles_and_bounds_samples() {
+        let mut window = HealthRttWindow::default();
+        for sample in 1..=200 {
+            window.record(Duration::from_micros(sample));
+        }
+        let summary = window.summary();
+        assert_eq!(summary["window_capacity"], HEALTH_RTT_WINDOW_CAPACITY);
+        assert_eq!(summary["window_samples"], 120);
+        assert_eq!(summary["total_samples"], 200);
+        assert_eq!(summary["min"], 81);
+        assert_eq!(summary["p50"], 140);
+        assert_eq!(summary["p95"], 194);
+        assert_eq!(summary["max"], 200);
+    }
+
+    #[test]
+    fn empty_health_rtt_window_uses_null_for_unmeasured_values() {
+        let summary = HealthRttWindow::default().summary();
+        assert_eq!(summary["window_samples"], 0);
+        assert!(summary["min"].is_null());
+        assert!(summary["p50"].is_null());
+        assert!(summary["p95"].is_null());
+        assert!(summary["max"].is_null());
     }
 }
 
