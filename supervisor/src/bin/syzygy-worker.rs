@@ -172,7 +172,7 @@ async fn run() -> Result<()> {
                     json!({
                         "state": if running { "process_running" } else { "stopped" },
                         "process_running": running,
-                        "process_id": child.as_ref().and_then(Child::id),
+                        "process_id": child.as_ref().and_then(ManagedChild::id),
                         "managed_session": managed_session,
                         "last_exit": last_exit,
                         "stream_ready": false,
