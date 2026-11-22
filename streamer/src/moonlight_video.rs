@@ -390,6 +390,34 @@ mod tests {
     }
 
     #[test]
+    fn bounds_data_and_parity_shards_across_negotiated_multi_fec_blocks() {
+        let config = MoonlightVideoConfig { shard_size: 64, fec_percentage: 20, multi_fec_supported: true, ..MoonlightVideoConfig::default() };
+        let mut packetizer = MoonlightVideoPacketizer::new(config).unwrap();
+        let nal = vec![0x41; 32 * 260];
+        let packets = packetizer.packetize(5, 1800, false, 0, &[&nal], None).unwrap();
+        let mut blocks: Vec<Vec<(usize, usize)>> = vec![Vec::new(); MAX_FEC_BLOCKS];
+        for packet in &packets {
+            let header = nv_header(packet);
+            let block = ((header[11] >> 4) & 0x3) as usize;
+            let info = u32::from_le_bytes(header[12..16].try_into().unwrap());
+            let shard_index = ((info >> 12) & 0x3ff) as usize;
+            let data_shards = ((info >> 22) & 0x3ff) as usize;
+            assert_eq!((info >> 4) & 0xff, 20);
+            assert!(shard_index < 255);
+            blocks[block].push((shard_index, data_shards));
+        }
+        let used_blocks: Vec<_> = blocks.into_iter().filter(|block| !block.is_empty()).collect();
+        assert_eq!(used_blocks.len(), 2);
+        for block in used_blocks {
+            let data_shards = block[0].1;
+            assert!(data_shards + (data_shards * 20).div_ceil(100) <= MAX_DATA_SHARDS_PER_BLOCK);
+            assert!(block.iter().all(|(_, count)| *count == data_shards));
+            assert_eq!(block.len(), data_shards + (data_shards * 20).div_ceil(100));
+            assert!(block.iter().enumerate().all(|(expected, (actual, _))| expected == *actual));
+        }
+    }
+
+    #[test]
     fn applies_the_moonlight_video_cipher_after_framing() {
         let mut packetizer = MoonlightVideoPacketizer::new(MoonlightVideoConfig { shard_size: 64, fec_percentage: 50, ..MoonlightVideoConfig::default() }).unwrap();
         let mut cipher = MoonlightVideoCipher::new(&[1; 16], 2).unwrap();
