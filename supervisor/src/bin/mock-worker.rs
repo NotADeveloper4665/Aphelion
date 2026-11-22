@@ -56,11 +56,7 @@ async fn main() -> Result<()> {
             return Err("host lifecycle requests must not include session_id".into());
         }
         let (body, should_exit) = match request.message_type.as_str() {
-            "host.start" => {
-                let already_running = host_running;
-                host_running = true;
-                (json!({"state": "process_running", "already_running": already_running}), false)
-            }
+            "host.start" => (start_host(&mut host_running), false),
             "worker.health" => (
                 json!({
                     "worker_state": "ready",
@@ -76,11 +72,7 @@ async fn main() -> Result<()> {
                     "metrics": null
                 }), false
             ),
-            "host.stop" => {
-                let was_running = host_running;
-                host_running = false;
-                (json!({"state": "stopped", "was_running": was_running}), false)
-            }
+            "host.stop" => (stop_host(&mut host_running), false),
             "worker.shutdown" => {
                 host_running = false;
                 (json!({"state": "shutting_down", "host_running": false}), true)
