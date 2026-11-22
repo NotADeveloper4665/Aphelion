@@ -181,3 +181,7 @@ async fn send<W: tokio::io::AsyncWrite + Unpin>(writer: &mut W, message: &Messag
     writer.flush().await?;
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "mock_worker_tests.rs"]
+mod mock_worker_tests;
