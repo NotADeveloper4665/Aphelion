@@ -27,7 +27,8 @@ async fn main() -> Result<()> {
         json!({"build": "mock-worker/0.1.0", "capabilities": ["session.start", "session.stop", "worker.health"]}))).await?;
     let ack = read_message(&mut reader).await?;
     if ack.kind != "response" || ack.message_type != "worker.hello_ack" || ack.request_id.as_deref() != Some(hello_id.as_str())
-        || !protocol_version_supported(&ack.protocol)\n        || !message_identity_matches(&ack, worker_id, generation) {
+        || !protocol_version_supported(&ack.protocol)
+        || !message_identity_matches(&ack, worker_id, generation) {
         return Err("supervisor handshake acknowledgement was invalid".into());
     }
     println!("mock-worker: handshake accepted");
