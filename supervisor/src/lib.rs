@@ -210,6 +210,11 @@ impl SessionIdMapper {
     pub fn active_count(&self) -> usize {
         self.source_to_session.len()
     }
+
+    /// End every session still mapped when its host process is stopped.
+    pub fn stop_all(&mut self) -> Vec<String> {
+        self.source_to_session.drain().map(|(_, session_id)| session_id).collect()
+    }
 }
 
 
@@ -434,6 +439,10 @@ mod tests {
             .start("opaque-process-token")
             .expect("map token in new generation");
         assert_eq!(new_generation_id, "session-8-1");
+
+        let stopped = first_generation.stop_all();
+        assert_eq!(stopped, vec!["session-7-2"]);
+        assert_eq!(first_generation.active_count(), 0);
     }
 
     #[test]

@@ -1,15 +1,12 @@
 use aphelion_supervisor::{
-    protocol_version_supported, Message,
-    MAX_MESSAGE_BYTES,
+    protocol_version_supported, Message, SessionIdMapper, MAX_MESSAGE_BYTES,
 };
 use serde_json::{json, Value};
 use std::{
-    collections::HashSet,
     env,
     os::unix::process::ExitStatusExt,
     path::PathBuf,
     process::Stdio,
-    sync::{atomic::{AtomicUsize, Ordering}, Arc},
     time::Duration,
 };
 use nix::{sys::signal::{killpg, Signal}, unistd::Pid};
@@ -17,6 +14,8 @@ use tokio::{
     io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader},
     net::UnixStream,
     process::{Child, Command},
+    sync::mpsc,
+    task::JoinHandle,
     time::{sleep, timeout},
 };
 use uuid::Uuid;
@@ -47,7 +46,8 @@ async fn run() -> Result<()> {
     eprintln!("syzygy-worker: control handshake complete for generation {generation}");
 
     let mut child: Option<ManagedChild> = None;
-    let client_session_count = Arc::new(AtomicUsize::new(0));
+    let mut sessions = SessionIdMapper::new(generation);
+    let (session_event_tx, mut session_event_rx) = mpsc::channel(64);
     let mut last_exit: Option<Value> = None;
 
     loop {
@@ -59,13 +59,27 @@ async fn run() -> Result<()> {
                     "signal": status.signal(),
                 }));
                 child = None;
-                client_session_count.store(0, Ordering::Relaxed);
                 return Err("managed Syzygy host process exited unexpectedly".into());
             }
         }
 
-        let request = timeout(Duration::from_secs(60), read_message(&mut reader)).await??;
+        let request = tokio::select! {
+            Some(event) = session_event_rx.recv() => {
+                emit_session_event(
+                    event,
+                    &mut sessions,
+                    &mut writer,
+                    &worker_id,
+                    generation,
+                ).await?;
+                continue;
+            }
+            result = timeout(Duration::from_secs(60), read_message(&mut reader)) => result??,
+        };
         validate_request(&request, &worker_id, generation)?;
+        while let Ok(event) = session_event_rx.try_recv() {
+            emit_session_event(event, &mut sessions, &mut writer, &worker_id, generation).await?;
+        }
 
         match request.message_type.as_str() {
             "host.start" => {
@@ -79,8 +93,7 @@ async fn run() -> Result<()> {
                         "process_id": child.as_ref().and_then(ManagedChild::id),
                     })
                 } else {
-                    client_session_count.store(0, Ordering::Relaxed);
-                    let mut spawned = spawn_syzygy(Arc::clone(&client_session_count))?;
+                    let mut spawned = spawn_syzygy(session_event_tx.clone())?;
                     // Allow immediate exec failures to surface before acknowledging process start.
                     sleep(Duration::from_millis(100)).await;
                     if let Some(status) = spawned.child.try_wait()? {
@@ -103,9 +116,15 @@ async fn run() -> Result<()> {
                 reject_session_id(&request)?;
                 let was_running = child.is_some();
                 if let Some(mut process) = child.take() {
-                    stop_process(&mut process).await?;
+                    stop_process(
+                        &mut process,
+                        &mut session_event_rx,
+                        &mut sessions,
+                        &mut writer,
+                        &worker_id,
+                        generation,
+                    ).await?;
                 }
-                client_session_count.store(0, Ordering::Relaxed);
                 send_response(
                     &mut writer,
                     &request,
@@ -131,7 +150,6 @@ async fn run() -> Result<()> {
                                 "signal": status.signal(),
                             }));
                             child = None;
-                            client_session_count.store(0, Ordering::Relaxed);
                             return Err("managed Syzygy host process exited unexpectedly".into());
                         }
                     }
@@ -149,7 +167,7 @@ async fn run() -> Result<()> {
                         "process_id": child.as_ref().and_then(ManagedChild::id),
                         "last_exit": last_exit,
                         "stream_ready": false,
-                        "client_session_count": client_session_count.load(Ordering::Relaxed),
+                        "client_session_count": sessions.active_count(),
                         "client_session_count_source": "SYZYGY_SESSION_START_STOP logs",
                         "media_health": null,
                     }),
@@ -158,8 +176,22 @@ async fn run() -> Result<()> {
             }
             "worker.shutdown" => {
                 if let Some(mut process) = child.take() {
-                    stop_process(&mut process).await?;
+                    stop_process(
+                        &mut process,
+                        &mut session_event_rx,
+                        &mut sessions,
+                        &mut writer,
+                        &worker_id,
+                        generation,
+                    ).await?;
                 }
+                flush_session_events(
+                    &mut session_event_rx,
+                    &mut sessions,
+                    &mut writer,
+                    &worker_id,
+                    generation,
+                ).await?;
                 send_response(
                     &mut writer,
                     &request,
@@ -189,6 +221,7 @@ async fn run() -> Result<()> {
 struct ManagedChild {
     child: Child,
     process_group: Pid,
+    output_tasks: Vec<JoinHandle<()>>,
     cleaned: bool,
 }
 
@@ -206,7 +239,7 @@ impl Drop for ManagedChild {
     }
 }
 
-fn spawn_syzygy(client_session_count: Arc<AtomicUsize>) -> Result<ManagedChild> {
+fn spawn_syzygy(session_event_tx: mpsc::Sender<ObservedSessionLog>) -> Result<ManagedChild> {
     let executable = env::var_os("APHELION_SYZYGY_EXECUTABLE")
         .ok_or("APHELION_SYZYGY_EXECUTABLE must point to the existing Syzygy binary")?;
     let configured_args = env::var("APHELION_SYZYGY_ARGS").unwrap_or_else(|_| "[]".to_owned());
@@ -230,40 +263,43 @@ fn spawn_syzygy(client_session_count: Arc<AtomicUsize>) -> Result<ManagedChild> 
     let mut child = command.spawn()?;
     let process_group = Pid::from_raw(child.id().ok_or("Syzygy child has no process ID")? as i32);
 
+    let mut output_tasks = Vec::new();
     if let Some(stdout) = child.stdout.take() {
-        tokio::spawn(drain_output(stdout, "stdout", Some(client_session_count)));
+        output_tasks.push(tokio::spawn(drain_output(stdout, "stdout", Some(session_event_tx))));
     }
     if let Some(stderr) = child.stderr.take() {
-        tokio::spawn(drain_output(stderr, "stderr", None));
+        output_tasks.push(tokio::spawn(drain_output(stderr, "stderr", None)));
     }
-    Ok(ManagedChild { child, process_group, cleaned: false })
+    Ok(ManagedChild { child, process_group, output_tasks, cleaned: false })
+}
+
+#[derive(Debug)]
+struct ObservedSessionLog {
+    started: bool,
+    source_token: String,
 }
 
 async fn drain_output<R: AsyncRead + Unpin>(
     stream: R,
     label: &'static str,
-    client_session_count: Option<Arc<AtomicUsize>>,
+    session_event_tx: Option<mpsc::Sender<ObservedSessionLog>>,
 ) {
-    let mut active_tokens = HashSet::new();
     let mut lines = BufReader::new(stream).lines();
     loop {
         match lines.next_line().await {
             Ok(Some(line)) => {
-                let observed = match (client_session_count.as_ref(), parse_session_lifecycle_log(&line)) {
-                    (Some(count), Some((started, token))) => {
-                        if started {
-                            active_tokens.insert(token.to_owned());
-                        } else {
-                            active_tokens.remove(token);
-                        }
-                        count.store(active_tokens.len(), Ordering::Relaxed);
-                        Some((started, active_tokens.len()))
+                let observed = session_event_tx.as_ref()
+                    .and_then(|_| parse_session_lifecycle_log(&line));
+                if let (Some(sender), Some((started, token))) = (session_event_tx.as_ref(), observed) {
+                    if sender.send(ObservedSessionLog {
+                        started,
+                        source_token: token.to_owned(),
+                    }).await.is_err() {
+                        eprintln!("syzygy-worker: supervisor session-event channel closed");
+                        break;
                     }
-                    _ => None,
-                };
-                if let Some((started, active_count)) = observed {
-                    let action = if started { "started" } else { "stopped" };
-                    eprintln!("syzygy[{label}]: observed client session {action}; active count {active_count}");
+                    let action = if started { "start" } else { "stop" };
+                    eprintln!("syzygy[{label}]: observed client session {action}");
                 } else {
                     eprintln!("syzygy[{label}]: {line}");
                 }
@@ -275,6 +311,75 @@ async fn drain_output<R: AsyncRead + Unpin>(
             }
         }
     }
+}
+
+fn map_session_event(
+    event: ObservedSessionLog,
+    sessions: &mut SessionIdMapper,
+    worker_id: &str,
+    generation: u64,
+) -> Result<Option<Message>> {
+    let (message_type, session_id) = if event.started {
+        let (session_id, newly_active) = sessions.start(&event.source_token)
+            .map_err(|error| error.to_owned())?;
+        if !newly_active {
+            return Ok(None);
+        }
+        ("session.started", session_id)
+    } else if let Some(session_id) = sessions.stop(&event.source_token) {
+        ("session.stopped", session_id)
+    } else {
+        return Ok(None);
+    };
+    Ok(Some(Message::new(
+        "event",
+        message_type,
+        worker_id,
+        generation,
+        None,
+        Some(session_id),
+        json!({"source": "syzygy_session_lifecycle_log"}),
+    )))
+}
+
+async fn emit_session_event<W: AsyncWrite + Unpin>(
+    event: ObservedSessionLog,
+    sessions: &mut SessionIdMapper,
+    writer: &mut W,
+    worker_id: &str,
+    generation: u64,
+) -> Result<()> {
+    if let Some(message) = map_session_event(event, sessions, worker_id, generation)? {
+        send_message(writer, &message).await?;
+    }
+    Ok(())
+}
+
+async fn flush_session_events<W: AsyncWrite + Unpin>(
+    receiver: &mut mpsc::Receiver<ObservedSessionLog>,
+    sessions: &mut SessionIdMapper,
+    writer: &mut W,
+    worker_id: &str,
+    generation: u64,
+) -> Result<()> {
+    while let Ok(event) = receiver.try_recv() {
+        emit_session_event(event, sessions, writer, worker_id, generation).await?;
+    }
+    for session_id in sessions.stop_all() {
+        send_message(
+            writer,
+            &Message::new(
+                "event",
+                "session.stopped",
+                worker_id,
+                generation,
+                None,
+                Some(session_id),
+                json!({"source": "host_stopped"}),
+            ),
+        ).await?;
+    }
+    Ok(())
 }
 
 fn parse_session_lifecycle_log(line: &str) -> Option<(bool, &str)> {
@@ -292,19 +397,54 @@ fn parse_session_lifecycle_log(line: &str) -> Option<(bool, &str)> {
     None
 }
 
-async fn stop_process(process: &mut ManagedChild) -> Result<()> {
+async fn stop_process<W: AsyncWrite + Unpin>(
+    process: &mut ManagedChild,
+    session_events: &mut mpsc::Receiver<ObservedSessionLog>,
+    sessions: &mut SessionIdMapper,
+    writer: &mut W,
+    worker_id: &str,
+    generation: u64,
+) -> Result<()> {
     let _ = killpg(process.process_group, Signal::SIGTERM);
-    match timeout(SHUTDOWN_GRACE, process.child.wait()).await {
-        Ok(status) => {
-            status?;
+    let graceful = timeout(SHUTDOWN_GRACE, async {
+        loop {
+            tokio::select! {
+                status = process.child.wait() => {
+                    status?;
+                    break;
+                }
+                Some(event) = session_events.recv() => {
+                    emit_session_event(event, sessions, writer, worker_id, generation).await?;
+                }
+            }
         }
+        Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
+    }).await;
+    match graceful {
+        Ok(result) => result?,
         Err(_) => {
             let _ = killpg(process.process_group, Signal::SIGKILL);
             process.child.kill().await?;
+            process.child.wait().await?;
         }
     }
+
     // Remove helper descendants even when the leader exits during the grace window.
     let _ = killpg(process.process_group, Signal::SIGKILL);
+    for mut task in process.output_tasks.drain(..) {
+        loop {
+            tokio::select! {
+                result = &mut task => {
+                    let _ = result;
+                    break;
+                }
+                Some(event) = session_events.recv() => {
+                    emit_session_event(event, sessions, writer, worker_id, generation).await?;
+                }
+            }
+        }
+    }
+    flush_session_events(session_events, sessions, writer, worker_id, generation).await?;
     process.cleaned = true;
     Ok(())
 }
@@ -457,7 +597,7 @@ mod tests {
             .process_group(0);
         let child = command.spawn().expect("spawn process group");
         let process_group = Pid::from_raw(child.id().expect("test pid") as i32);
-        drop(ManagedChild { child, process_group, cleaned: false });
+        drop(ManagedChild { child, process_group, output_tasks: Vec::new(), cleaned: false });
 
         sleep(Duration::from_millis(400)).await;
         assert!(!marker.exists(), "descendant in the worker process group must be killed");
@@ -479,6 +619,30 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("must not include session_id"));
+    }
+
+    #[test]
+    fn maps_log_tokens_to_generation_scoped_events_without_leaking_tokens() {
+        let mut sessions = SessionIdMapper::new(3);
+        let started = map_session_event(
+            ObservedSessionLog { started: true, source_token: "private-pointer".to_owned() },
+            &mut sessions,
+            "worker-a",
+            3,
+        ).expect("map start event").expect("new session event");
+        assert_eq!(started.message_type, "session.started");
+        assert_eq!(started.session_id.as_deref(), Some("session-3-1"));
+        assert!(!serde_json::to_string(&started).unwrap().contains("private-pointer"));
+
+        let stopped = map_session_event(
+            ObservedSessionLog { started: false, source_token: "private-pointer".to_owned() },
+            &mut sessions,
+            "worker-a",
+            3,
+        ).expect("map stop event").expect("known session stop event");
+        assert_eq!(stopped.message_type, "session.stopped");
+        assert_eq!(stopped.session_id.as_deref(), Some("session-3-1"));
+        assert_eq!(sessions.active_count(), 0);
     }
 
     #[test]

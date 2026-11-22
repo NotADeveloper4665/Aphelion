@@ -58,6 +58,8 @@ jobs:
           grep -Fq '"state":"process_started"' <<<"$output"
           grep -Fq '"process_running":true' <<<"$output"
           grep -Fq '"client_session_count":1' <<<"$output"
+          grep -Fq 'observed worker event Started' <<<"$output"
+          grep -Fq 'observed worker event Stopped' <<<"$output"
           grep -Fq '"state":"stopped"' <<<"$output"
           ! grep -Fq '0xabc' <<<"$output"
           grep -Fxq "1" "$arg_log"
