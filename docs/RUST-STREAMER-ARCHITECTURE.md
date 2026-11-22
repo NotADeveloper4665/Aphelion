@@ -1,6 +1,6 @@
 # Aphelion Rust Streamer Architecture
 
-**Status:** Implementation architecture for the progressive Rust media-path replacement. The current `aphelion-streamer` crate implements only standard H.264/RTP packetization and UDP transmission. This document is the target design, not a claim that the target is complete.
+**Status:** Implementation architecture for the progressive Rust media-path replacement. The current `aphelion-streamer` crate has portal-node PipeWire/GStreamer capture plumbing, a software H.264 FFmpeg adapter, bounded RTSP parsing/state and partial SDP/UDP-port negotiation, a capture-to-encode-to-Moonlight-UDP prototype, Moonlight packet framing/encryption primitives, and generic Reed-Solomon tests. Pairing/key derivation, Moonlight-compatible parity layout, real portal acquisition, and client compatibility remain incomplete. This document describes the target, not a completeness claim.
 
 ## Goals and invariants
 
@@ -58,9 +58,9 @@ Implement in independently testable stages:
 
 1. Bounded incremental RTSP framing and strict request parsing.
 2. Deterministic request/response state transitions with CSeq, session, and supported-option checks.
-3. Pairing/certificate integration and key derivation with compatibility vectors from the maintained protocol implementation.
+3. Pairing/certificate integration and key derivation with compatibility vectors from the maintained protocol implementation. Current code extracts bounded SDP parameters but has no authentication or secrets.
 4. Client negotiation with an explicit supported profile matrix; reject unsupported combinations rather than silently coercing them.
-5. UDP stream endpoint setup and association with the authenticated RTSP launch session.
+5. UDP stream endpoint setup and association with the authenticated RTSP launch session. Current SETUP validates client RTP/RTCP ports and requires server ports reserved by the caller; it does not yet bind or associate authenticated stream/control sockets.
 
 Before the complete pairing and negotiation path passes vectors and a real client, the Syzygy-backed host remains the usable path.
 
@@ -93,7 +93,7 @@ On worker or device failure, stop admitting work, release queued frames and GPU 
 
 1. Architecture and philosophy documents; bounded RTSP parser; generic Reed-Solomon block encoder; video AES-GCM envelope primitive.
 2. Portal-authorized PipeWire/GStreamer BGRA capture and low-latency software H.264 encoding adapters, with explicit timestamps and bounded encoder output.
-3. Conservative RTSP session ordering, CSeq correlation, and duplicate replay; pairing, authentication, SDP capability parsing, and key derivation remain open.
+3. Conservative RTSP session ordering, CSeq correlation, duplicate replay, bounded SDP capability extraction, and validated UDP RTP/RTCP port negotiation; pairing, authentication, control-channel association, and key derivation remain open.
 4. Moonlight RTP/NV_VIDEO_PACKET data-shard framing and UDP send are implemented in no-parity mode; capture → encode → packetize → UDP now has a CI integration path.
 5. Add Moonlight's FEC prefix/parity layout with differential golden vectors, complete authenticated session and negotiated UDP stream association, then attach the pipeline to the worker lifecycle.
 6. Add hardware encoders and zero-copy buffers only after capability and ownership tests; run hardware/client acceptance before defaulting to the Rust path.

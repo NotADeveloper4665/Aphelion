@@ -1,9 +1,9 @@
 //! Conservative RTSP session sequencing for the Moonlight adapter.
 //!
 //! This implements request ordering, CSeq correlation, duplicate replay, and the
-//! ANNOUNCE/SETUP/PLAY/TEARDOWN lifecycle. Authentication, pairing, client capability
-//! parsing, UDP ping association, and session-key negotiation are intentionally not
-//! implied by accepting a request here.
+//! ANNOUNCE/SETUP/PLAY/TEARDOWN lifecycle. Bounded SDP extraction and UDP RTP/RTCP
+//! port negotiation are implemented; authentication, pairing, control-channel
+//! association, UDP ping handling, and session-key negotiation remain separate work.
 
 use std::collections::VecDeque;
 
@@ -41,6 +41,25 @@ impl MediaTrack {
         match self { Self::Video => 1, Self::Audio => 2, Self::Control => 4 }
     }
 }
+
+/// Consecutive RTP/RTCP ports. RTP starts on an even UDP port.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MediaPortPair { rtp: u16, rtcp: u16 }
+
+impl MediaPortPair {
+    pub fn new(rtp: u16, rtcp: u16) -> Option<Self> {
+        (rtp >= 1024 && rtp % 2 == 0 && rtcp == rtp.checked_add(1)?).then_some(Self { rtp, rtcp })
+    }
+    pub fn rtp(self) -> u16 { self.rtp }
+    pub fn rtcp(self) -> u16 { self.rtcp }
+}
+
+/// Ports that the media layer has already reserved for each RTSP track.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MoonlightMediaPorts { pub video: MediaPortPair, pub audio: MediaPortPair, pub control: MediaPortPair }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NegotiatedTrackPorts { pub client: MediaPortPair, pub server: MediaPortPair }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RtspResponse {
@@ -100,17 +119,30 @@ pub struct MoonlightRtspSession {
     cache: VecDeque<CachedResponse>,
     highest_cseq: Option<u32>,
     stream_profile: Option<MoonlightStreamProfile>,
+    media_ports: Option<MoonlightMediaPorts>,
+    negotiated_ports: [Option<NegotiatedTrackPorts>; 3],
 }
 
 impl MoonlightRtspSession {
     pub fn new(session_id: impl Into<String>) -> Self {
-        Self { session_id: session_id.into(), state: SessionState::AwaitingAnnounce, tracks: 0, cache: VecDeque::new(), highest_cseq: None, stream_profile: None }
+        Self { session_id: session_id.into(), state: SessionState::AwaitingAnnounce, tracks: 0, cache: VecDeque::new(), highest_cseq: None, stream_profile: None, media_ports: None, negotiated_ports: [None; 3] }
+    }
+
+    /// Construct a session after the media layer has bound the server-side UDP pairs.
+    pub fn with_media_ports(session_id: impl Into<String>, media_ports: MoonlightMediaPorts) -> Self {
+        let mut session = Self::new(session_id);
+        session.media_ports = Some(media_ports);
+        session
     }
 
     pub fn state(&self) -> SessionState { self.state }
 
     /// The validated stream parameters from ANNOUNCE, once accepted.
     pub fn stream_profile(&self) -> Option<&MoonlightStreamProfile> { self.stream_profile.as_ref() }
+
+    pub fn negotiated_track_ports(&self, track: MediaTrack) -> Option<NegotiatedTrackPorts> {
+        self.negotiated_ports[track_index(track)]
+    }
 
     pub fn handle(&mut self, request: RtspRequest) -> SessionResult {
         if let Some(cached) = self.cache.iter().find(|cached| cached.request.cseq == request.cseq) {
@@ -165,20 +197,25 @@ impl MoonlightRtspSession {
             let Some(transport) = request.header("transport") else {
                 return result(request.cseq, 461, "Unsupported Transport", SessionEvent::None, false);
             };
-            if !transport.to_ascii_uppercase().contains("RTP/AVP/UDP") || !transport.to_ascii_lowercase().contains("client_port=") {
+            let Some(client_ports) = parse_udp_client_ports(transport) else {
                 return result(request.cseq, 461, "Unsupported Transport", SessionEvent::None, false);
-            }
+            };
             if request.header("session").is_some_and(|session| !session_matches(session, &self.session_id)) {
                 return result(request.cseq, 454, "Session Not Found", SessionEvent::None, false);
             }
             if self.tracks & track.bit() != 0 {
                 return result(request.cseq, 455, "Track Already Configured", SessionEvent::None, false);
             }
+            let Some(media_ports) = self.media_ports else {
+                return result(request.cseq, 503, "Media Ports Unavailable", SessionEvent::None, false);
+            };
+            let server_ports = match track { MediaTrack::Video => media_ports.video, MediaTrack::Audio => media_ports.audio, MediaTrack::Control => media_ports.control };
+            self.negotiated_ports[track_index(track)] = Some(NegotiatedTrackPorts { client: client_ports, server: server_ports });
             self.tracks |= track.bit();
             self.state = if self.tracks & MediaTrack::Video.bit() != 0 { SessionState::Ready } else { SessionState::Configuring };
             let mut output = result(request.cseq, 200, "OK", SessionEvent::TrackConfigured(track), false);
             output.response.headers.push(("Session".into(), self.session_id.clone()));
-            output.response.headers.push(("Transport".into(), transport.to_owned()));
+            output.response.headers.push(("Transport".into(), format!("RTP/AVP/UDP;unicast;client_port={}-{};server_port={}-{};mode=play", client_ports.rtp, client_ports.rtcp, server_ports.rtp, server_ports.rtcp)));
             return output;
         }
         if method == "PLAY" {
@@ -221,6 +258,28 @@ fn session_matches(value: &str, expected: &str) -> bool {
     value.split(';').next().is_some_and(|id| id.trim() == expected)
 }
 
+fn track_index(track: MediaTrack) -> usize {
+    match track { MediaTrack::Video => 0, MediaTrack::Audio => 1, MediaTrack::Control => 2 }
+}
+
+fn parse_udp_client_ports(transport: &str) -> Option<MediaPortPair> {
+    let mut parts = transport.split(';').map(str::trim);
+    if !parts.next()?.eq_ignore_ascii_case("RTP/AVP/UDP") { return None; }
+    let mut unicast = false;
+    let mut client_ports = None;
+    for parameter in parts {
+        if parameter.eq_ignore_ascii_case("unicast") { unicast = true; continue; }
+        if let Some((name, value)) = parameter.split_once('=') {
+            if name.trim().eq_ignore_ascii_case("client_port") {
+                if client_ports.is_some() { return None; }
+                let (rtp, rtcp) = value.trim().split_once('-')?;
+                client_ports = MediaPortPair::new(rtp.parse().ok()?, rtcp.parse().ok()?);
+            }
+        }
+    }
+    if unicast { client_ports } else { None }
+}
+
 fn result(cseq: u32, status: u16, reason: &'static str, event: SessionEvent, replayed: bool) -> SessionResult {
     SessionResult { response: RtspResponse::new(cseq, status, reason), event, replayed }
 }
@@ -229,6 +288,14 @@ fn result(cseq: u32, status: u16, reason: &'static str, event: SessionEvent, rep
 mod tests {
     use super::*;
     use crate::rtsp::RtspDecoder;
+
+    fn media_ports() -> MoonlightMediaPorts {
+        MoonlightMediaPorts {
+            video: MediaPortPair::new(48000, 48001).unwrap(),
+            audio: MediaPortPair::new(48002, 48003).unwrap(),
+            control: MediaPortPair::new(48004, 48005).unwrap(),
+        }
+    }
 
     fn parse(method: &str, target: &str, cseq: u32, headers: &str, body: &[u8]) -> RtspRequest {
         let wire = format!("{method} {target} RTSP/1.0\r\nCSeq: {cseq}\r\n{headers}Content-Length: {}\r\n\r\n", body.len());
@@ -241,13 +308,15 @@ mod tests {
 
     #[test]
     fn runs_announce_setup_play_and_teardown_in_order() {
-        let mut session = MoonlightRtspSession::new("test-session");
+        let mut session = MoonlightRtspSession::with_media_ports("test-session", media_ports());
         let announce = session.handle(parse("ANNOUNCE", "rtsp://host", 1, "Content-Type: application/sdp\r\n", VALID_SDP));
         assert_eq!(announce.response.status, 200);
         assert_eq!(session.stream_profile().unwrap().width, 1920);
         let setup = session.handle(parse("SETUP", "rtsp://host/streamid=video", 2, "Transport: RTP/AVP/UDP;unicast;client_port=47998-47999\r\n", b""));
         assert_eq!(setup.response.status, 200);
         assert_eq!(setup.event, SessionEvent::TrackConfigured(MediaTrack::Video));
+        assert_eq!(setup.response.headers.iter().find(|(name, _)| name == "Transport").unwrap().1, "RTP/AVP/UDP;unicast;client_port=47998-47999;server_port=48000-48001;mode=play");
+        assert_eq!(session.negotiated_track_ports(MediaTrack::Video).unwrap().server.rtp(), 48000);
         let play = session.handle(parse("PLAY", "rtsp://host", 3, "Session: test-session\r\n", b""));
         assert_eq!(play.response.status, 200);
         assert_eq!(session.state(), SessionState::Playing);
@@ -271,9 +340,9 @@ mod tests {
 
     #[test]
     fn rejects_play_without_video_and_setup_with_wrong_session() {
-        let mut session = MoonlightRtspSession::new("expected");
+        let mut session = MoonlightRtspSession::with_media_ports("expected", media_ports());
         session.handle(parse("ANNOUNCE", "rtsp://host", 1, "Content-Type: application/sdp\r\n", VALID_SDP));
-        let setup = session.handle(parse("SETUP", "rtsp://host/streamid=audio", 2, "Transport: RTP/AVP/UDP;unicast;client_port=1-2\r\nSession: other\r\n", b""));
+        let setup = session.handle(parse("SETUP", "rtsp://host/streamid=audio", 2, "Transport: RTP/AVP/UDP;unicast;client_port=47998-47999\r\nSession: other\r\n", b""));
         assert_eq!(setup.response.status, 454);
         let play = session.handle(parse("PLAY", "rtsp://host", 3, "Session: expected\r\n", b""));
         assert_eq!(play.response.status, 455);
@@ -286,5 +355,21 @@ mod tests {
         assert_eq!(response.response.status, 400);
         assert_eq!(session.state(), SessionState::AwaitingAnnounce);
         assert!(session.stream_profile().is_none());
+    }
+
+    #[test]
+    fn requires_reserved_server_ports_and_valid_unicast_client_port_pairs() {
+        assert!(MediaPortPair::new(47998, 48000).is_none());
+        assert!(MediaPortPair::new(47999, 48000).is_none());
+        let mut no_media = MoonlightRtspSession::new("no-ports");
+        no_media.handle(parse("ANNOUNCE", "rtsp://host", 1, "Content-Type: application/sdp\r\n", VALID_SDP));
+        let no_listener = no_media.handle(parse("SETUP", "rtsp://host/streamid=video", 2, "Transport: RTP/AVP/UDP;unicast;client_port=47998-47999\r\n", b""));
+        assert_eq!(no_listener.response.status, 503);
+
+        let mut session = MoonlightRtspSession::with_media_ports("bad-client", media_ports());
+        session.handle(parse("ANNOUNCE", "rtsp://host", 1, "Content-Type: application/sdp\r\n", VALID_SDP));
+        let bad_pair = session.handle(parse("SETUP", "rtsp://host/streamid=video", 2, "Transport: RTP/AVP/UDP;unicast;client_port=47999-48000\r\n", b""));
+        assert_eq!(bad_pair.response.status, 461);
+        assert_eq!(session.state(), SessionState::Configuring);
     }
 }
