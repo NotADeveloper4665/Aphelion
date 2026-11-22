@@ -1,7 +1,7 @@
 use aphelion_supervisor::{message_identity_matches, missing_required_capabilities, protocol_version_supported, Message, RestartPolicy, SessionRegistry, PROTOCOL_MAJOR, PROTOCOL_MINOR, MAX_MESSAGE_BYTES};
 use serde_json::json;
 use std::{env, os::unix::fs::PermissionsExt, process::Stdio, time::Duration};
-use nix::{sys::signal::{kill, Signal}, unistd::Pid};
+use nix::{sys::signal::{killpg, Signal}, unistd::Pid};
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     net::UnixListener,
@@ -69,6 +69,9 @@ async fn main() -> Result<()> {
             .stdin(Stdio::null())
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit())
+            // Keep the worker out of the terminal's foreground process group. Ctrl+C
+            // must reach the supervisor first so it can request worker shutdown over IPC.
+            .process_group(0)
             .kill_on_drop(true)
             .spawn()?;
 
@@ -359,12 +362,15 @@ async fn reap_worker(child: &mut Child, graceful_wait: Duration) -> Result<std::
     }
 
     if let Some(pid) = child.id() {
-        let _ = kill(Pid::from_raw(pid as i32), Signal::SIGTERM);
+        let _ = killpg(Pid::from_raw(pid as i32), Signal::SIGTERM);
     }
     if let Ok(status) = timeout(Duration::from_secs(1), child.wait()).await {
         return Ok(status?);
     }
 
+    if let Some(pid) = child.id() {
+        let _ = killpg(Pid::from_raw(pid as i32), Signal::SIGKILL);
+    }
     child.kill().await?;
     Ok(child.wait().await?)
 }

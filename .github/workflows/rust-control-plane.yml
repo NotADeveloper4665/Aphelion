@@ -213,7 +213,7 @@ jobs:
             APHELION_SYZYGY_EXECUTABLE="$stub" \
             APHELION_TEST_STOP_MARKER="$stop_marker" \
             APHELION_TEST_STOP_COMMAND_LOG="$stop_command_log" \
-            ./target/debug/supervisor --serve >"$output_file" 2>&1 &
+            setsid ./target/debug/supervisor --serve >"$output_file" 2>&1 &
           supervisor_pid=$!
           cleanup() {
             kill -TERM "$supervisor_pid" 2>/dev/null || true
@@ -244,7 +244,7 @@ jobs:
             cat "$output_file"
             exit 1
           }
-          kill -INT "$supervisor_pid"
+          kill -INT -- "-$supervisor_pid"
           wait "$supervisor_pid"
           trap - EXIT
           cat "$output_file"
