@@ -65,6 +65,42 @@ pub fn message_identity_matches(message: &Message, worker_id: &str, generation: 
     message.worker_instance_id == worker_id && message.worker_generation == generation
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionIntent {
+    /// Stable display selector such as "default"; not a capture-backend name.
+    pub display: String,
+    pub video: VideoIntent,
+    pub audio_enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct VideoIntent {
+    pub codec: VideoCodec,
+    pub width: u32,
+    pub height: u32,
+    pub fps: u32,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum VideoCodec {
+    H264,
+    Hevc,
+    Av1,
+}
+
+impl SessionIntent {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.display.trim().is_empty() {
+            return Err("display selector must not be empty");
+        }
+        if self.video.width == 0 || self.video.height == 0 || self.video.fps == 0 {
+            return Err("video width, height, and fps must be non-zero");
+        }
+        Ok(())
+    }
+}
+
 impl Message {
     pub fn new(
         kind: impl Into<String>,
@@ -162,6 +198,42 @@ mod tests {
         assert_eq!(policy.delay_before_restart(2), Some(Duration::from_secs(2)));
         assert_eq!(policy.delay_before_restart(3), Some(Duration::from_secs(2)));
         assert_eq!(policy.delay_before_restart(4), None);
+    }
+
+
+    #[test]
+    fn session_intent_is_process_agnostic_and_serializable() {
+        let intent = SessionIntent {
+            display: "default".to_owned(),
+            video: VideoIntent { codec: VideoCodec::H264, width: 1920, height: 1080, fps: 60 },
+            audio_enabled: true,
+        };
+        intent.validate().expect("valid stream intent");
+        let value = serde_json::to_value(intent).expect("serialize stream intent");
+        assert_eq!(value["display"], "default");
+        assert_eq!(value["video"]["codec"], "h264");
+        assert_eq!(value["video"]["width"], 1920);
+        assert_eq!(value["video"]["height"], 1080);
+        assert_eq!(value["video"]["fps"], 60);
+        assert_eq!(value["audio_enabled"], true);
+        for implementation_detail in ["encoder_backend", "capture_backend", "syzygy_class"] {
+            assert!(value.get(implementation_detail).is_none());
+        }
+    }
+
+    #[test]
+    fn session_intent_rejects_missing_display_or_video_dimensions() {
+        let mut intent = SessionIntent {
+            display: "default".to_owned(),
+            video: VideoIntent { codec: VideoCodec::Hevc, width: 1280, height: 720, fps: 60 },
+            audio_enabled: false,
+        };
+        intent.validate().expect("valid intent");
+        intent.display.clear();
+        assert!(intent.validate().is_err());
+        intent.display = "default".to_owned();
+        intent.video.width = 0;
+        assert!(intent.validate().is_err());
     }
 
     #[test]

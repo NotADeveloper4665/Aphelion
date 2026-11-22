@@ -1,4 +1,4 @@
-use aphelion_supervisor::{message_identity_matches, protocol_version_supported, Message, RestartPolicy, PROTOCOL_MAJOR, PROTOCOL_MINOR, MAX_MESSAGE_BYTES};
+use aphelion_supervisor::{message_identity_matches, protocol_version_supported, Message, RestartPolicy, SessionIntent, VideoCodec, VideoIntent, PROTOCOL_MAJOR, PROTOCOL_MINOR, MAX_MESSAGE_BYTES};
 use serde_json::json;
 use std::{env, os::unix::fs::PermissionsExt, process::Stdio, time::Duration};
 use nix::{sys::signal::{kill, Signal}, unistd::Pid};
@@ -117,7 +117,11 @@ async fn run_demo(
 
     let start_id = Uuid::new_v4().to_string();
     let start = Message::new("request", "session.start", worker_id, generation,
-        Some(start_id.clone()), Some(session_id.to_owned()), json!({"audio_enabled": false}));
+        Some(start_id.clone()), Some(session_id.to_owned()), serde_json::to_value(SessionIntent {
+            display: "default".to_owned(),
+            video: VideoIntent { codec: VideoCodec::H264, width: 1920, height: 1080, fps: 60 },
+            audio_enabled: false,
+        })?);
     send_message(&mut write, &start).await?;
     let started = read_message(&mut reader).await?;
     validate_response(&started, worker_id, generation, &start_id, "session.start")?;

@@ -1,4 +1,4 @@
-use aphelion_supervisor::{message_identity_matches, protocol_version_supported, Message, MAX_MESSAGE_BYTES};
+use aphelion_supervisor::{message_identity_matches, protocol_version_supported, Message, SessionIntent, MAX_MESSAGE_BYTES};
 use serde_json::json;
 use std::{collections::{HashMap, HashSet, VecDeque}, env, path::PathBuf, time::Duration};
 use tokio::{
@@ -56,6 +56,8 @@ async fn main() -> Result<()> {
         let (body, should_exit) = match request.message_type.as_str() {
             "session.start" => {
                 let sid = session_id.as_deref().ok_or("session.start requires session_id")?;
+                let intent: SessionIntent = serde_json::from_value(request.body.clone())?;
+                intent.validate().map_err(|error| error.to_owned())?;
                 (start_session(&mut active_sessions, sid), false)
             }
             "worker.health" => (

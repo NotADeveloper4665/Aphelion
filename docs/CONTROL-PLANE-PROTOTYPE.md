@@ -34,6 +34,20 @@ Expected log sequence includes:
 - `shutdown acknowledged`
 - worker process exit status
 
+## Process-agnostic session request
+
+A `session.start` body contains desired stream intent: a display selector, codec, width, height, frame rate, and audio-enabled flag. The mock validates non-empty display selection and non-zero video dimensions/frame rate. It contains no capture-backend, encoder-backend, Syzygy class, or C++ layout fields. A future adapter translates this stable intent into its implementation-specific configuration.
+
+```json
+{
+  "display": "default",
+  "video": {"codec": "h264", "width": 1920, "height": 1080, "fps": 60},
+  "audio_enabled": false
+}
+```
+
+This schema describes a request contract only; the mock does not capture or stream media.
+
 ## Request and session retry behavior
 
 - `request_id` is scoped to one worker generation. The worker caches the last 128 completed request/response pairs in FIFO order.
