@@ -244,11 +244,11 @@ jobs:
             cat "$output_file"
             exit 1
           }
-          kill -TERM "$supervisor_pid"
+          kill -INT "$supervisor_pid"
           wait "$supervisor_pid"
           trap - EXIT
           cat "$output_file"
-          grep -Fq 'received SIGTERM; stopping host' "$output_file"
+          grep -Fq 'received SIGINT; stopping host' "$output_file"
           grep -Fq 'stop_host =>' "$output_file"
           grep -Fq 'shutdown acknowledged; waiting for child exit' "$output_file"
           grep -Fq 'worker generation 1 exited with exit status: 0' "$output_file"
