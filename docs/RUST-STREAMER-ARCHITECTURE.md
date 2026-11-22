@@ -1,6 +1,6 @@
 # Aphelion Rust Streamer Architecture
 
-**Status:** Implementation architecture for the progressive Rust media-path replacement. The current `aphelion-streamer` crate has portal-node PipeWire/GStreamer capture plumbing, a software H.264 FFmpeg adapter, bounded RTSP parsing/state and partial SDP/UDP-port negotiation, a capture-to-encode-to-Moonlight-UDP prototype, Moonlight packet framing/encryption primitives, and generic Reed-Solomon tests. Pairing/key derivation, Moonlight-compatible parity layout, real portal acquisition, and client compatibility remain incomplete. This document describes the target, not a completeness claim.
+**Status:** Implementation architecture for the progressive Rust media-path replacement. The current `aphelion-streamer` crate has portal-node PipeWire/GStreamer capture plumbing, a software H.264 FFmpeg adapter, bounded RTSP/SDP and partial UDP-port negotiation, a capture-to-encode-to-Moonlight-UDP prototype, data/parity packet framing and encryption primitives. Pairing/key derivation, parity differential vectors, real portal acquisition, and client compatibility remain incomplete. This document describes the target, not a completeness claim.
 
 ## Goals and invariants
 
@@ -94,6 +94,6 @@ On worker or device failure, stop admitting work, release queued frames and GPU 
 1. Architecture and philosophy documents; bounded RTSP parser; generic Reed-Solomon block encoder; video AES-GCM envelope primitive.
 2. Portal-authorized PipeWire/GStreamer BGRA capture and low-latency software H.264 encoding adapters, with explicit timestamps and bounded encoder output.
 3. Conservative RTSP session ordering, CSeq correlation, duplicate replay, bounded SDP capability extraction, and validated UDP RTP/RTCP port negotiation; pairing, authentication, control-channel association, and key derivation remain open.
-4. Moonlight RTP/NV_VIDEO_PACKET data-shard framing and UDP send are implemented in no-parity mode; capture → encode → packetize → UDP now has a CI integration path.
-5. Add Moonlight's FEC prefix/parity layout with differential golden vectors, complete authenticated session and negotiated UDP stream association, then attach the pipeline to the worker lifecycle.
+4. Moonlight RTP/NV_VIDEO_PACKET framing and UDP send are implemented with bounded Reed-Solomon parity blocks; capture → encode → FEC/encrypt → packetize → UDP now has a CI integration path. Differential wire vectors remain open.
+5. Verify the FEC prefix/parity layout with differential golden vectors, complete authenticated session and negotiated UDP stream association, then attach the pipeline to the worker lifecycle.
 6. Add hardware encoders and zero-copy buffers only after capability and ownership tests; run hardware/client acceptance before defaulting to the Rust path.

@@ -1,14 +1,16 @@
-//! Moonlight H.264 video datagram layout, in an explicit no-parity prototype mode.
+//! Moonlight H.264 video datagram layout with bounded Reed-Solomon FEC blocks.
 //!
 //! The packet fields mirror the packed RTP + NV_VIDEO_PACKET layout used by the
 //! Syzygy/Moonlight compatibility path. Frames larger than one 255-data-shard FEC block
-//! are split across the protocol's four-block limit. FEC percentage is currently zero;
-//! generic Reed-Solomon encoding exists in [`crate::fec`] but parity headers and recovery
-//! behavior must be differentially validated before this module emits parity packets.
+//! are split across the protocol's four-block limit. Parity is generated over complete
+//! plaintext data shards, then each shard receives final sequence/FEC metadata and is
+//! optionally encrypted. Differential vectors and a real-client pass are still required
+//! before claiming Moonlight interoperability.
 
 use std::{io, net::{SocketAddr, UdpSocket}};
 
 use crate::crypto::{CryptoError, MoonlightVideoCipher, MOONLIGHT_VIDEO_PREFIX_BYTES};
+use crate::fec::{FecBlock, FecError};
 
 const RTP_HEADER_BYTES: usize = 12;
 const MOONLIGHT_PACKET_HEADER_BYTES: usize = 32;
@@ -22,6 +24,8 @@ pub enum MoonlightPacketError {
     PacketSizeOutOfRange(usize),
     TooManyBlocks(usize),
     MultiBlockUnsupported,
+    InvalidFecPercentage(u8),
+    FecBlockTooLarge,
     EmptyAccessUnit,
     EmptyNalUnit,
     InvalidNalHeader,
@@ -35,6 +39,8 @@ impl std::fmt::Display for MoonlightPacketError {
             Self::PacketSizeOutOfRange(value) => write!(f, "Moonlight shard size {value} is outside the supported range"),
             Self::TooManyBlocks(value) => write!(f, "Moonlight frame requires {value} FEC blocks; maximum is {MAX_FEC_BLOCKS}"),
             Self::MultiBlockUnsupported => f.write_str("the negotiated Moonlight client does not support multi-block video frames"),
+            Self::InvalidFecPercentage(value) => write!(f, "Moonlight FEC percentage {value} exceeds 100"),
+            Self::FecBlockTooLarge => f.write_str("Moonlight FEC parameters cannot fit within the 255-shard block limit"),
             Self::EmptyAccessUnit => f.write_str("H.264 access unit contains no NAL units"),
             Self::EmptyNalUnit => f.write_str("H.264 NAL unit is empty"),
             Self::InvalidNalHeader => f.write_str("H.264 NAL unit has an invalid forbidden_zero_bit or type"),
@@ -58,16 +64,19 @@ pub struct MoonlightVideoConfig {
     pub ssrc: u32,
     /// Set only when the negotiated client advertises multi-FEC block support.
     pub multi_fec_supported: bool,
+    /// Requested parity percentage from the authenticated client profile.
+    pub fec_percentage: u8,
+    /// Minimum parity shards per block from the client profile.
+    pub minimum_fec_packets: u8,
 }
 
 impl Default for MoonlightVideoConfig {
-    fn default() -> Self { Self { shard_size: 1200, initial_sequence: 0, ssrc: 0, multi_fec_supported: false } }
+    fn default() -> Self { Self { shard_size: 1200, initial_sequence: 0, ssrc: 0, multi_fec_supported: false, fec_percentage: 0, minimum_fec_packets: 0 } }
 }
 
 /// Packetizes one encoded H.264 access unit into Moonlight video datagrams.
 ///
-/// This first cut emits data-only frames with `fecInfo` percentage 0. It accepts an
-/// optional already-negotiated per-session cipher; passing no cipher emits plaintext.
+/// It accepts an optional already-negotiated per-session cipher; passing no cipher emits plaintext.
 /// Do not enable the plaintext mode on a real authenticated Moonlight network session.
 pub struct MoonlightVideoPacketizer {
     config: MoonlightVideoConfig,
@@ -145,6 +154,7 @@ impl MoonlightVideoPacketizer {
         if !(MOONLIGHT_PACKET_HEADER_BYTES + 1..=MAX_DATAGRAM_BYTES).contains(&config.shard_size) {
             return Err(MoonlightPacketError::PacketSizeOutOfRange(config.shard_size));
         }
+        if config.fec_percentage > 100 { return Err(MoonlightPacketError::InvalidFecPercentage(config.fec_percentage)); }
         Ok(Self { next_sequence: config.initial_sequence, config })
     }
 
@@ -172,8 +182,10 @@ impl MoonlightVideoPacketizer {
 
         let shard_payload_size = self.config.shard_size - MOONLIGHT_PACKET_HEADER_BYTES;
         let frame_data_size = FRAME_HEADER_BYTES.checked_add(encoded.len()).ok_or(MoonlightPacketError::PacketSizeOutOfRange(self.config.shard_size))?;
-        let total_shards = frame_data_size.div_ceil(shard_payload_size);
-        let block_count = total_shards.div_ceil(MAX_DATA_SHARDS_PER_BLOCK);
+        let total_data_shards = frame_data_size.div_ceil(shard_payload_size);
+        let max_data_shards = max_data_shards_per_block(self.config.fec_percentage, self.config.minimum_fec_packets as usize)
+            .ok_or(MoonlightPacketError::FecBlockTooLarge)?;
+        let block_count = total_data_shards.div_ceil(max_data_shards);
         if block_count > MAX_FEC_BLOCKS { return Err(MoonlightPacketError::TooManyBlocks(block_count)); }
         if block_count > 1 && !self.config.multi_fec_supported { return Err(MoonlightPacketError::MultiBlockUnsupported); }
         let last_payload_len = frame_data_size % shard_payload_size;
@@ -188,16 +200,18 @@ impl MoonlightVideoPacketizer {
         frame_data.extend_from_slice(&encoded);
 
         let last_block_index = if self.config.multi_fec_supported { (block_count - 1) as u8 } else { 0 };
-        let mut packets = Vec::with_capacity(total_shards);
+        let mut packets = Vec::with_capacity(total_data_shards + block_count * self.config.minimum_fec_packets as usize + total_data_shards * self.config.fec_percentage as usize / 100 + 1);
         let mut frame_offset = 0;
-        let mut frame_packet_index = 0usize;
+        let mut low_sequence = self.next_sequence;
         for block_index in 0..block_count {
-            let remaining = frame_data.len() - frame_offset;
-            let block_shards = remaining.div_ceil(shard_payload_size).min(MAX_DATA_SHARDS_PER_BLOCK);
+            let blocks_remaining = block_count - block_index;
+            let remaining_data_shards = (frame_data.len() - frame_offset).div_ceil(shard_payload_size);
+            // Balance the frame payload across blocks on complete shard boundaries.
+            let block_shards = remaining_data_shards.div_ceil(blocks_remaining).min(max_data_shards);
+            let mut block_payload = Vec::with_capacity(block_shards * self.config.shard_size);
             for shard_index in 0..block_shards {
                 let mut plaintext = vec![0; self.config.shard_size];
-                let sequence = self.next_sequence;
-                self.next_sequence = self.next_sequence.wrapping_add(1);
+                let sequence = low_sequence.wrapping_add(shard_index as u16);
 
                 // RTP fixed header and the four-byte Moonlight extension prefix.
                 plaintext[0] = 0x90; // RTP v2 + extension.
@@ -218,30 +232,58 @@ impl MoonlightVideoPacketizer {
                 plaintext[nv + 9] = 0;
                 plaintext[nv + 10] = 0x10; // multiFecFlags marker
                 plaintext[nv + 11] = ((block_index as u8) << 4) | (last_block_index << 6);
-                let fec_info = ((shard_index as u32) << 12) | ((block_shards as u32) << 22);
-                plaintext[nv + 12..nv + 16].copy_from_slice(&fec_info.to_le_bytes());
-
                 let length = (frame_data.len() - frame_offset).min(shard_payload_size);
                 let payload_start = MOONLIGHT_PACKET_HEADER_BYTES;
                 plaintext[payload_start..payload_start + length]
                     .copy_from_slice(&frame_data[frame_offset..frame_offset + length]);
                 frame_offset += length;
+                block_payload.extend_from_slice(&plaintext);
+            }
+
+            let fec = FecBlock::encode(&block_payload, self.config.shard_size, self.config.fec_percentage, self.config.minimum_fec_packets as usize)
+                .map_err(map_fec_error)?;
+            if fec.data_shards > max_data_shards { return Err(MoonlightPacketError::FecBlockTooLarge); }
+            for (shard_index, mut shard) in fec.shards.into_iter().enumerate() {
+                let sequence = low_sequence.wrapping_add(shard_index as u16);
+                shard[0] = 0x90;
+                shard[1] = 96;
+                shard[2..4].copy_from_slice(&sequence.to_be_bytes());
+                shard[4..8].copy_from_slice(&timestamp_90khz.to_be_bytes());
+                shard[8..12].copy_from_slice(&self.config.ssrc.to_be_bytes());
+
+                let nv = RTP_HEADER_BYTES + 4;
+                shard[nv + 4..nv + 8].copy_from_slice(&frame_index.to_le_bytes());
+                shard[nv + 10] = 0x10;
+                shard[nv + 11] = ((block_index as u8) << 4) | (last_block_index << 6);
+                let fec_info = ((shard_index as u32) << 12)
+                    | ((fec.data_shards as u32) << 22)
+                    | ((self.config.fec_percentage as u32) << 4);
+                shard[nv + 12..nv + 16].copy_from_slice(&fec_info.to_le_bytes());
 
                 let datagram = if let Some(video_cipher) = cipher.as_deref_mut() {
-                    let encrypted = video_cipher.seal_shard(frame_index, &plaintext)?;
+                    let encrypted = video_cipher.seal_shard(frame_index, &shard)?;
                     if encrypted.len() > MAX_DATAGRAM_BYTES { return Err(MoonlightPacketError::EncryptedDatagramTooLarge); }
                     encrypted
-                } else {
-                    plaintext
-                };
+                } else { shard };
                 packets.push(datagram);
-                frame_packet_index += 1;
             }
+            low_sequence = low_sequence.wrapping_add((fec.data_shards + fec.parity_shards) as u16);
         }
-        debug_assert_eq!(frame_packet_index, total_shards);
+        self.next_sequence = low_sequence;
+        debug_assert_eq!(frame_offset, frame_data.len());
         Ok(packets)
     }
 }
+
+fn max_data_shards_per_block(fec_percentage: u8, minimum_parity_shards: usize) -> Option<usize> {
+    (1..=MAX_DATA_SHARDS_PER_BLOCK).rev().find(|data| {
+        let data = *data;
+        let percentage_parity = (data * fec_percentage as usize).div_ceil(100);
+        data + percentage_parity.max(minimum_parity_shards) <= MAX_DATA_SHARDS_PER_BLOCK
+    })
+}
+
+fn map_fec_error(_error: FecError) -> MoonlightPacketError { MoonlightPacketError::FecBlockTooLarge }
 
 #[cfg(test)]
 mod tests {
@@ -251,7 +293,7 @@ mod tests {
 
     #[test]
     fn emits_moonlight_rtp_extension_frame_metadata_and_short_header() {
-        let mut packetizer = MoonlightVideoPacketizer::new(MoonlightVideoConfig { shard_size: 64, initial_sequence: 9, ssrc: 0x11223344, multi_fec_supported: false }).unwrap();
+        let mut packetizer = MoonlightVideoPacketizer::new(MoonlightVideoConfig { shard_size: 64, initial_sequence: 9, ssrc: 0x11223344, multi_fec_supported: false, fec_percentage: 0, minimum_fec_packets: 0 }).unwrap();
         let packets = packetizer.packetize(7, 0x01020304, true, 42, &[&[0x65, 0xaa, 0xbb]], None).unwrap();
         assert_eq!(packets.len(), 1);
         let packet = &packets[0];
@@ -270,12 +312,12 @@ mod tests {
 
     #[test]
     fn splits_large_frames_into_bounded_multi_fec_blocks() {
-        let mut packetizer = MoonlightVideoPacketizer::new(MoonlightVideoConfig { shard_size: 64, initial_sequence: u16::MAX - 1, ssrc: 0, multi_fec_supported: true }).unwrap();
+        let mut packetizer = MoonlightVideoPacketizer::new(MoonlightVideoConfig { shard_size: 64, initial_sequence: u16::MAX - 1, ssrc: 0, multi_fec_supported: true, fec_percentage: 0, minimum_fec_packets: 0 }).unwrap();
         let nal = vec![0x41; 32 * 260];
         let packets = packetizer.packetize(4, 0, false, 0, &[&nal], None).unwrap();
         assert!(packets.len() > MAX_DATA_SHARDS_PER_BLOCK);
         let first = nv_header(&packets[0]);
-        let second_block = nv_header(&packets[MAX_DATA_SHARDS_PER_BLOCK]);
+        let second_block = nv_header(packets.iter().find(|packet| (nv_header(packet)[11] >> 4 & 0x3) == 1).unwrap());
         assert_eq!(first[11] >> 4 & 0x3, 0);
         assert_eq!(second_block[11] >> 4 & 0x3, 1);
         assert_eq!(second_block[11] >> 6 & 0x3, 1);
@@ -284,11 +326,50 @@ mod tests {
 
     #[test]
     fn applies_the_moonlight_video_cipher_after_framing() {
-        let mut packetizer = MoonlightVideoPacketizer::new(MoonlightVideoConfig { shard_size: 64, ..MoonlightVideoConfig::default() }).unwrap();
+        let mut packetizer = MoonlightVideoPacketizer::new(MoonlightVideoConfig { shard_size: 64, fec_percentage: 50, ..MoonlightVideoConfig::default() }).unwrap();
         let mut cipher = MoonlightVideoCipher::new(&[1; 16], 2).unwrap();
         let packets = packetizer.packetize(3, 0, true, 0, &[&[0x65, 1]], Some(&mut cipher)).unwrap();
-        assert_eq!(packets[0].len(), MOONLIGHT_VIDEO_PREFIX_BYTES + 64);
-        assert_eq!(&packets[0][12..16], &3_u32.to_le_bytes());
+        assert_eq!(packets.len(), 2);
+        assert!(packets.iter().all(|packet| packet.len() == MOONLIGHT_VIDEO_PREFIX_BYTES + 64));
+        assert!(packets.iter().all(|packet| &packet[12..16] == &3_u32.to_le_bytes()));
+    }
+
+    #[test]
+    fn adds_parity_shards_and_updates_wire_metadata_before_encryption() {
+        let config = MoonlightVideoConfig { shard_size: 64, fec_percentage: 25, ..MoonlightVideoConfig::default() };
+        let mut packetizer = MoonlightVideoPacketizer::new(config).unwrap();
+        let nal = vec![0x41; 64];
+        let packets = packetizer.packetize(9, 900, false, 4, &[&nal], None).unwrap();
+        assert_eq!(packets.len(), 4); // three data shards plus one parity shard
+        assert!(packets.iter().all(|packet| packet[0] == 0x90 && packet[1] == 96));
+        for (index, packet) in packets.iter().enumerate() {
+            assert_eq!(u16::from_be_bytes([packet[2], packet[3]]), index as u16);
+            let info = u32::from_le_bytes(nv_header(packet)[12..16].try_into().unwrap());
+            assert_eq!((info >> 22) & 0x3ff, 3);
+            assert_eq!((info >> 4) & 0xff, 25);
+            assert_eq!((info >> 12) & 0x3ff, index as u32);
+        }
+    }
+
+    #[test]
+    fn minimum_parity_and_percentage_both_fit_the_protocol_block_limit() {
+        assert_eq!(max_data_shards_per_block(0, 1), Some(254));
+        assert_eq!(max_data_shards_per_block(20, 1), Some(212));
+        assert_eq!(max_data_shards_per_block(100, 255), None);
+        assert!(matches!(MoonlightVideoPacketizer::new(MoonlightVideoConfig { fec_percentage: 101, ..MoonlightVideoConfig::default() }), Err(MoonlightPacketError::InvalidFecPercentage(101))));
+    }
+
+    #[test]
+    fn emits_negotiated_minimum_parity_when_percentage_is_zero() {
+        let config = MoonlightVideoConfig { shard_size: 64, minimum_fec_packets: 1, ..MoonlightVideoConfig::default() };
+        let mut packetizer = MoonlightVideoPacketizer::new(config).unwrap();
+        let packets = packetizer.packetize(2, 90, false, 0, &[&[0x41, 1]], None).unwrap();
+        assert_eq!(packets.len(), 2);
+        let data_info = u32::from_le_bytes(nv_header(&packets[0])[12..16].try_into().unwrap());
+        let parity_info = u32::from_le_bytes(nv_header(&packets[1])[12..16].try_into().unwrap());
+        assert_eq!((data_info >> 22) & 0x3ff, 1);
+        assert_eq!((parity_info >> 22) & 0x3ff, 1);
+        assert_eq!((parity_info >> 12) & 0x3ff, 1);
     }
 
     #[test]
