@@ -180,6 +180,7 @@ jobs:
             fi
             sleep 0.1
           done
+          cat "$output_file"
           grep -Fq 'managed Syzygy host process exited unexpectedly (success=false, code=Some(23), signal=None)' "$output_file"
           grep -Fq 'starting worker generation 2' "$output_file"
           test "$(grep -Fc 'host is running; connect with a Moonlight client' "$output_file")" -ge 2
