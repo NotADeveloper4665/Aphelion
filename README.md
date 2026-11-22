@@ -21,7 +21,7 @@ The Syzygy adapter can launch and stop an existing Syzygy binary and report proc
 
 The Actions workflow also produces a temporary Linux x86_64 prototype bundle on successful branch pushes. See [runtime prototype instructions](docs/PROTOTYPE-RUNTIME-TEST.md) for download and first-run steps. One Fedora desktop run confirmed a real Moonlight stream and Ctrl+C shutdown; broader hardware, repeated real-client lifecycle, input, and direct-versus-managed regression coverage remain pending.
 
-The maintainer-observed Moonlight stream, disconnect, and Ctrl+C shutdown are recorded in [Milestone 1 runtime results](docs/MILESTONE-1-RUNTIME-RESULTS.md). Milestone 1 health reporting, repeat-cycle/orphan checks, direct-versus-managed comparison, and the incomplete Milestone 0 baseline remain open.
+The maintainer-observed Moonlight stream, disconnect, and Ctrl+C shutdown are recorded in [Milestone 1 runtime results](docs/MILESTONE-1-RUNTIME-RESULTS.md). Real subsystem measurements, repeated real-client/orphan checks, direct-versus-managed comparison, and the incomplete Milestone 0 baseline remain open. The adapter reports honest unavailable states, and CI covers repeated lifecycle cleanup with a stub.
 
 ## Architecture documents
 
