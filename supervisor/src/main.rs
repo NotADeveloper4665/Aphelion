@@ -1,6 +1,7 @@
 use aphelion_supervisor::{Message, PROTOCOL_MAJOR, PROTOCOL_MINOR, MAX_MESSAGE_BYTES};
 use serde_json::json;
 use std::{env, os::unix::fs::PermissionsExt, process::Stdio, time::Duration};
+use nix::{sys::signal::{kill, Signal}, unistd::Pid};
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     net::UnixListener,
@@ -40,10 +41,12 @@ async fn main() -> Result<()> {
         .spawn()?;
 
     let result = run_demo(&listener, &mut child, &worker_id, generation, &session_id).await;
-    if result.is_err() && child.id().is_some() {
-        let _ = child.kill().await;
-    }
-    let status = timeout(Duration::from_secs(3), child.wait()).await??;
+    let graceful_wait = if result.is_ok() {
+        Duration::from_secs(2)
+    } else {
+        Duration::ZERO
+    };
+    let status = reap_worker(&mut child, graceful_wait).await?;
     println!("supervisor: worker process exited with {status}");
     let _ = tokio::fs::remove_file(&socket_path).await;
     let _ = tokio::fs::remove_dir(&runtime_dir).await;
@@ -148,4 +151,25 @@ fn validate_response(message: &Message, worker_id: &str, generation: u64, reques
         return Err("response protocol major version mismatch".into());
     }
     Ok(())
+}
+
+
+/// Reap the child on every path. After the requested graceful window, escalate
+/// through SIGTERM and finally SIGKILL with bounded waits.
+async fn reap_worker(child: &mut Child, graceful_wait: Duration) -> Result<std::process::ExitStatus> {
+    if !graceful_wait.is_zero() {
+        if let Ok(status) = timeout(graceful_wait, child.wait()).await {
+            return Ok(status?);
+        }
+    }
+
+    if let Some(pid) = child.id() {
+        let _ = kill(Pid::from_raw(pid as i32), Signal::SIGTERM);
+    }
+    if let Ok(status) = timeout(Duration::from_secs(1), child.wait()).await {
+        return Ok(status?);
+    }
+
+    child.kill().await?;
+    Ok(child.wait().await?)
 }
