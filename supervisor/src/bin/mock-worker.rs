@@ -1,4 +1,4 @@
-use aphelion_supervisor::{Message, PROTOCOL_MAJOR, PROTOCOL_MINOR, MAX_MESSAGE_BYTES};
+use aphelion_supervisor::{message_identity_matches, protocol_version_supported, Message, PROTOCOL_MAJOR, PROTOCOL_MINOR, MAX_MESSAGE_BYTES};
 use serde_json::json;
 use std::{collections::HashSet, env, path::PathBuf, time::Duration};
 use tokio::{
@@ -26,7 +26,7 @@ async fn main() -> Result<()> {
         Some(hello_id.clone()), None,
         json!({"build": "mock-worker/0.1.0", "capabilities": ["session.start", "session.stop", "worker.health"]}))).await?;
     let ack = read_message(&mut reader).await?;
-    if ack.message_type != "worker.hello_ack" || ack.request_id.as_deref() != Some(hello_id.as_str()) {
+    if ack.kind != "response" || ack.message_type != "worker.hello_ack" || ack.request_id.as_deref() != Some(hello_id.as_str())\n        || !protocol_version_supported(&ack.protocol)\n        || !message_identity_matches(&ack, worker_id, generation) {
         return Err("supervisor handshake acknowledgement was invalid".into());
     }
     println!("mock-worker: handshake accepted");
@@ -34,8 +34,8 @@ async fn main() -> Result<()> {
     let mut active_sessions = HashSet::<String>::new();
     loop {
         let request = read_message(&mut reader).await?;
-        if request.kind != "request" { return Err("worker expected request message".into()); }
-        if request.worker_instance_id != worker_id || request.worker_generation != generation {
+        if request.kind != "request" { return Err("worker expected request message".into()); }\n        if !protocol_version_supported(&request.protocol) { return Err("unsupported request protocol version".into()); }\n        if !matches!(request.request_id.as_deref(), Some(id) if !id.is_empty()) { return Err("request requires a non-empty request_id".into()); }
+        if !message_identity_matches(&request, worker_id, generation) {
             return Err("request addressed to a different worker generation".into());
         }
         let session_id = request.session_id.clone();
@@ -108,7 +108,7 @@ async fn read_message<R: tokio::io::AsyncBufRead + Unpin>(reader: &mut R) -> Res
 }
 
 async fn send<W: tokio::io::AsyncWrite + Unpin>(writer: &mut W, message: &Message) -> Result<()> {
-    if message.protocol.major != PROTOCOL_MAJOR || message.protocol.minor > PROTOCOL_MINOR {
+    if !protocol_version_supported(&message.protocol) {
         return Err("unsupported protocol version".into());
     }
     let mut bytes = serde_json::to_vec(message)?;
