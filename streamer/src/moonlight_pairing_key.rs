@@ -63,9 +63,10 @@ impl MoonlightPairingKey {
         let mut digest = Sha256::new();
         digest.update(salt);
         digest.update(pin.as_bytes());
-        let hash = digest.finalize();
+        let mut hash: [u8; 32] = digest.finalize().into();
         let mut key = [0_u8; 16];
         key.copy_from_slice(&hash[..16]);
+        hash.zeroize();
         Ok(Self(key))
     }
 
