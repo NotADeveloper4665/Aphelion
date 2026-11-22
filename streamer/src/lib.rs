@@ -1,9 +1,9 @@
 //! Experimental Rust media-plane building blocks.
 //!
-//! Experimental capture, software encoding, RTSP lifecycle, Moonlight video framing,
-//! and standard-RTP transport building blocks. The Moonlight packetizer currently emits
-//! data-only packets without parity and is not a complete client-compatible host.
-//! The supervisor control socket is not used for media.
+//! Experimental capture, software encoding, RTSP session transport, Moonlight video
+//! framing/FEC/encryption, and standard-RTP building blocks. These components are not
+//! yet an authenticated, interoperable Moonlight host. The supervisor control socket is
+//! not used for media.
 
 use std::{
     io,
@@ -19,6 +19,7 @@ pub mod encoder;
 pub mod moonlight_video;
 pub mod pipeline;
 pub mod moonlight_sdp;
+pub mod rtsp_connection;
 
 const RTP_HEADER_LEN: usize = 12;
 const H264_FU_A_TYPE: u8 = 28;
