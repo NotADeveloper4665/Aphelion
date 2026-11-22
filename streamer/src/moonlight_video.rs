@@ -11,6 +11,7 @@ use std::{io, net::{SocketAddr, UdpSocket}};
 
 use crate::crypto::{CryptoError, MoonlightVideoCipher, MOONLIGHT_VIDEO_PREFIX_BYTES};
 use crate::fec::{FecBlock, FecError};
+use crate::moonlight_sdp::{MoonlightStreamProfile, VideoCodec};
 
 const RTP_HEADER_BYTES: usize = 12;
 const MOONLIGHT_PACKET_HEADER_BYTES: usize = 32;
@@ -26,6 +27,8 @@ pub enum MoonlightPacketError {
     MultiBlockUnsupported,
     InvalidFecPercentage(u8),
     FecBlockTooLarge,
+    UnsupportedCodec,
+    EncryptionRequired,
     EmptyAccessUnit,
     EmptyNalUnit,
     InvalidNalHeader,
@@ -41,6 +44,8 @@ impl std::fmt::Display for MoonlightPacketError {
             Self::MultiBlockUnsupported => f.write_str("the negotiated Moonlight client does not support multi-block video frames"),
             Self::InvalidFecPercentage(value) => write!(f, "Moonlight FEC percentage {value} exceeds 100"),
             Self::FecBlockTooLarge => f.write_str("Moonlight FEC parameters cannot fit within the 255-shard block limit"),
+            Self::UnsupportedCodec => f.write_str("Moonlight video packetizer currently supports H.264 only"),
+            Self::EncryptionRequired => f.write_str("the negotiated Moonlight session requires an established video cipher"),
             Self::EmptyAccessUnit => f.write_str("H.264 access unit contains no NAL units"),
             Self::EmptyNalUnit => f.write_str("H.264 NAL unit is empty"),
             Self::InvalidNalHeader => f.write_str("H.264 NAL unit has an invalid forbidden_zero_bit or type"),
@@ -68,10 +73,24 @@ pub struct MoonlightVideoConfig {
     pub fec_percentage: u8,
     /// Minimum parity shards per block from the client profile.
     pub minimum_fec_packets: u8,
+    /// Set from validated session negotiation; plaintext sending is refused when true.
+    pub encryption_required: bool,
 }
 
 impl Default for MoonlightVideoConfig {
-    fn default() -> Self { Self { shard_size: 1200, initial_sequence: 0, ssrc: 0, multi_fec_supported: false, fec_percentage: 0, minimum_fec_packets: 0 } }
+    fn default() -> Self { Self { shard_size: 1200, initial_sequence: 0, ssrc: 0, multi_fec_supported: false, fec_percentage: 0, minimum_fec_packets: 0, encryption_required: false } }
+}
+
+impl MoonlightVideoConfig {
+    /// Apply the validated RTSP profile after the caller has chosen a packet size and
+    /// confirmed multi-FEC support from the negotiated client capabilities.
+    pub fn apply_session_profile(mut self, profile: &MoonlightStreamProfile, multi_fec_supported: bool) -> Result<Self, MoonlightPacketError> {
+        if profile.codec != VideoCodec::H264 { return Err(MoonlightPacketError::UnsupportedCodec); }
+        self.minimum_fec_packets = u8::try_from(profile.minimum_fec_packets).map_err(|_| MoonlightPacketError::FecBlockTooLarge)?;
+        self.encryption_required = profile.encryption_flags != 0;
+        self.multi_fec_supported = multi_fec_supported;
+        Ok(self)
+    }
 }
 
 /// Packetizes one encoded H.264 access unit into Moonlight video datagrams.
@@ -171,6 +190,7 @@ impl MoonlightVideoPacketizer {
         if cipher.is_some() && self.config.shard_size + MOONLIGHT_VIDEO_PREFIX_BYTES > MAX_DATAGRAM_BYTES {
             return Err(MoonlightPacketError::EncryptedDatagramTooLarge);
         }
+        if self.config.encryption_required && cipher.is_none() { return Err(MoonlightPacketError::EncryptionRequired); }
         let mut encoded = Vec::new();
         for nal in nals {
             if nal.is_empty() { return Err(MoonlightPacketError::EmptyNalUnit); }
@@ -293,7 +313,7 @@ mod tests {
 
     #[test]
     fn emits_moonlight_rtp_extension_frame_metadata_and_short_header() {
-        let mut packetizer = MoonlightVideoPacketizer::new(MoonlightVideoConfig { shard_size: 64, initial_sequence: 9, ssrc: 0x11223344, multi_fec_supported: false, fec_percentage: 0, minimum_fec_packets: 0 }).unwrap();
+        let mut packetizer = MoonlightVideoPacketizer::new(MoonlightVideoConfig { shard_size: 64, initial_sequence: 9, ssrc: 0x11223344, multi_fec_supported: false, fec_percentage: 0, minimum_fec_packets: 0, encryption_required: false }).unwrap();
         let packets = packetizer.packetize(7, 0x01020304, true, 42, &[&[0x65, 0xaa, 0xbb]], None).unwrap();
         assert_eq!(packets.len(), 1);
         let packet = &packets[0];
@@ -312,7 +332,7 @@ mod tests {
 
     #[test]
     fn splits_large_frames_into_bounded_multi_fec_blocks() {
-        let mut packetizer = MoonlightVideoPacketizer::new(MoonlightVideoConfig { shard_size: 64, initial_sequence: u16::MAX - 1, ssrc: 0, multi_fec_supported: true, fec_percentage: 0, minimum_fec_packets: 0 }).unwrap();
+        let mut packetizer = MoonlightVideoPacketizer::new(MoonlightVideoConfig { shard_size: 64, initial_sequence: u16::MAX - 1, ssrc: 0, multi_fec_supported: true, fec_percentage: 0, minimum_fec_packets: 0, encryption_required: false }).unwrap();
         let nal = vec![0x41; 32 * 260];
         let packets = packetizer.packetize(4, 0, false, 0, &[&nal], None).unwrap();
         assert!(packets.len() > MAX_DATA_SHARDS_PER_BLOCK);
@@ -370,6 +390,26 @@ mod tests {
         assert_eq!((data_info >> 22) & 0x3ff, 1);
         assert_eq!((parity_info >> 22) & 0x3ff, 1);
         assert_eq!((parity_info >> 12) & 0x3ff, 1);
+    }
+
+    #[test]
+    fn applies_negotiated_encryption_and_fec_requirements_to_the_sender() {
+        let profile = MoonlightStreamProfile {
+            width: 1920, height: 1080, frames_per_second: 60, bitrate_kbps: 30_000,
+            packet_size: 1200, codec: VideoCodec::H264, minimum_fec_packets: 1,
+            moonlight_feature_flags: 0, nvidia_feature_flags: 135, encryption_flags: 1,
+        };
+        let config = MoonlightVideoConfig { shard_size: 64, ..MoonlightVideoConfig::default() }
+            .apply_session_profile(&profile, false).unwrap();
+        assert!(config.encryption_required);
+        assert_eq!(config.minimum_fec_packets, 1);
+
+        let mut packetizer = MoonlightVideoPacketizer::new(config).unwrap();
+        assert_eq!(packetizer.packetize(1, 0, false, 0, &[&[0x41, 1]], None).unwrap_err(), MoonlightPacketError::EncryptionRequired);
+        let mut cipher = MoonlightVideoCipher::new(&[5; 16], 1).unwrap();
+        let packets = packetizer.packetize(1, 0, false, 0, &[&[0x41, 1]], Some(&mut cipher)).unwrap();
+        assert_eq!(packets.len(), 2);
+        assert!(packets.iter().all(|packet| packet.len() == MOONLIGHT_VIDEO_PREFIX_BYTES + 64));
     }
 
     #[test]
