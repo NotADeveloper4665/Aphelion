@@ -27,7 +27,7 @@ APHELION_SYZYGY_ARGS='["-config","/path/to/syzygy.conf"]' \
 ./bin/aphelion-syzygy
 ```
 
-Use the existing Syzygy configuration, pairing procedure, and Moonlight client to attempt a stream. Stop the host with Ctrl+C. On shutdown, Aphelion invokes `-stop` on the configured Syzygy binary to stop a Syzygy-managed background instance, then signals and reaps its own foreground process group with escalation. The launcher reports host lifecycle and periodic worker health in the terminal. Session log tokens are converted to opaque IDs before they reach Aphelion logs or control messages.
+On start, Aphelion invokes `-stop` on the configured Syzygy binary to clear any Syzygy-managed background instance, then checks `/proc` and refuses to launch if another matching Syzygy process remains. Use the existing Syzygy configuration, pairing procedure, and Moonlight client to attempt a stream. Stop the host with Ctrl+C. On shutdown, Aphelion invokes `-stop` again, then signals and reaps its own foreground process group with escalation. The launcher reports host lifecycle and periodic worker health in the terminal. Session log tokens are converted to opaque IDs before they reach Aphelion logs or control messages.
 
 If Moonlight still sees the host after Aphelion exits, check for a separately running host before restarting the machine:
 

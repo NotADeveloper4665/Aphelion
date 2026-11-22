@@ -94,6 +94,10 @@ async fn run() -> Result<()> {
                         "process_id": child.as_ref().and_then(ManagedChild::id),
                     })
                 } else {
+                    // Clear any Syzygy-managed background instance first. The
+                    // foreground child remains owned by this worker below.
+                    request_syzygy_service_stop().await;
+                    ensure_no_existing_syzygy_process()?;
                     let mut spawned = spawn_syzygy(session_event_tx.clone())?;
                     // Allow immediate exec failures to surface before acknowledging process start.
                     sleep(Duration::from_millis(100)).await;
@@ -486,6 +490,43 @@ async fn request_syzygy_service_stop() {
             eprintln!("syzygy-worker: Syzygy -stop timed out; escalating to owned process group");
         }
     }
+}
+
+/// Refuse to start another host if a foreground Syzygy process remains after
+/// asking Syzygy's own service manager to stop its managed instance.
+fn ensure_no_existing_syzygy_process() -> Result<()> {
+    let executable = env::var_os("APHELION_SYZYGY_EXECUTABLE")
+        .ok_or("APHELION_SYZYGY_EXECUTABLE must point to the existing Syzygy binary")?;
+    let expected_executable = std::fs::canonicalize(executable)?;
+    let current_pid = std::process::id();
+
+    for entry in std::fs::read_dir("/proc")? {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(_) => continue,
+        };
+        let Some(pid) = entry.file_name().to_str().and_then(|name| name.parse::<u32>().ok()) else {
+            continue;
+        };
+        if pid == current_pid {
+            continue;
+        }
+
+        let process_dir = entry.path();
+        let executable_matches = std::fs::canonicalize(process_dir.join("exe"))
+            .is_ok_and(|path| path == expected_executable);
+        let process_name = std::fs::read_to_string(process_dir.join("comm"))
+            .unwrap_or_default();
+        let known_syzygy_name = matches!(process_name.trim(), "syzygy" | "sunshine");
+
+        if executable_matches || known_syzygy_name {
+            return Err(format!(
+                "a separate Syzygy host process is still running (pid {pid}); refusing to start a duplicate"
+            ).into());
+        }
+    }
+
+    Ok(())
 }
 
 async fn handshake<R, W>(
