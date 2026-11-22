@@ -45,7 +45,7 @@ Expected log sequence includes:
 - One worker and one demonstration session per run.
 - `SOCK_STREAM` with newline-delimited JSON; this is a prototype choice, not the final transport decision.
 - 64 KiB maximum message size.
-- No external client API, bounded restart manager, heartbeat, peer-credential verification, durable request deduplication, session recovery, or real media subsystem.
+- No external client API, heartbeat, peer-credential verification, durable request deduplication, or real media subsystem. Restart/backoff currently wraps the mock-worker demonstration only; recovery of a real Syzygy worker and its sessions is not implemented.
 - The worker is a Rust mock, not the Syzygy C++ worker.
 - No media payload crosses the control socket.
 
@@ -53,4 +53,4 @@ Expected log sequence includes:
 
 GitHub Actions currently performs a workspace build, IPC envelope unit tests, and an end-to-end supervisor/worker smoke run. The smoke run has confirmed handshake, start, health, stop, shutdown acknowledgement, and child exit status 0.
 
-CI now covers incompatible protocol versions, missing request IDs, stale worker generations, incorrect response types, request correlation, malformed/oversized/truncated/disconnected IPC input, crash reaping, graceful exit, and SIGTERM-to-SIGKILL escalation. Duplicate request replay and session idempotency are covered by worker unit tests. Bounded automatic worker restart, supervisor-loss cleanup, peer authentication, durable session recovery, and Fedora-host verification remain open.
+CI now covers incompatible protocol versions, missing request IDs, stale worker generations, incorrect response types, request correlation, malformed/oversized/truncated/disconnected IPC input, crash reaping, graceful exit, and SIGTERM-to-SIGKILL escalation. Duplicate request replay and session idempotency are covered by worker unit tests. Supervisor-loss cleanup, peer authentication, durable session recovery, integration with a real Syzygy worker, and Fedora-host verification remain open.

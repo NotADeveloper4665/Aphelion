@@ -1,9 +1,39 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::time::Duration;
 
 pub const PROTOCOL_MAJOR: u16 = 1;
 pub const PROTOCOL_MINOR: u16 = 0;
 pub const MAX_MESSAGE_BYTES: usize = 64 * 1024;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RestartPolicy {
+    pub max_restarts: u32,
+    pub initial_delay: Duration,
+    pub maximum_delay: Duration,
+}
+
+impl Default for RestartPolicy {
+    fn default() -> Self {
+        Self {
+            max_restarts: 3,
+            initial_delay: Duration::from_millis(250),
+            maximum_delay: Duration::from_secs(4),
+        }
+    }
+}
+
+impl RestartPolicy {
+    /// Return the delay before the next restart, where zero is the first retry.
+    pub fn delay_before_restart(&self, restart_number: u32) -> Option<Duration> {
+        if restart_number >= self.max_restarts {
+            return None;
+        }
+        let multiplier = 1_u32.checked_shl(restart_number.min(31)).unwrap_or(u32::MAX);
+        Some(self.initial_delay.saturating_mul(multiplier).min(self.maximum_delay))
+    }
+}
+
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProtocolVersion {
@@ -117,6 +147,21 @@ mod tests {
         assert!(!protocol_version_supported(&ProtocolVersion { major: PROTOCOL_MAJOR + 1, minor: 0 }));
         assert!(!protocol_version_supported(&ProtocolVersion { major: PROTOCOL_MAJOR.saturating_sub(1), minor: 0 }));
         assert!(!protocol_version_supported(&ProtocolVersion { major: PROTOCOL_MAJOR, minor: PROTOCOL_MINOR + 1 }));
+    }
+
+
+    #[test]
+    fn restart_policy_uses_capped_exponential_backoff_and_exhausts_budget() {
+        let policy = RestartPolicy {
+            max_restarts: 4,
+            initial_delay: Duration::from_secs(1),
+            maximum_delay: Duration::from_secs(2),
+        };
+        assert_eq!(policy.delay_before_restart(0), Some(Duration::from_secs(1)));
+        assert_eq!(policy.delay_before_restart(1), Some(Duration::from_secs(2)));
+        assert_eq!(policy.delay_before_restart(2), Some(Duration::from_secs(2)));
+        assert_eq!(policy.delay_before_restart(3), Some(Duration::from_secs(2)));
+        assert_eq!(policy.delay_before_restart(4), None);
     }
 
     #[test]

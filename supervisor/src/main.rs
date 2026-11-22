@@ -1,4 +1,4 @@
-use aphelion_supervisor::{message_identity_matches, protocol_version_supported, Message, PROTOCOL_MAJOR, PROTOCOL_MINOR, MAX_MESSAGE_BYTES};
+use aphelion_supervisor::{message_identity_matches, protocol_version_supported, Message, RestartPolicy, PROTOCOL_MAJOR, PROTOCOL_MINOR, MAX_MESSAGE_BYTES};
 use serde_json::json;
 use std::{env, os::unix::fs::PermissionsExt, process::Stdio, time::Duration};
 use nix::{sys::signal::{kill, Signal}, unistd::Pid};
@@ -14,9 +14,7 @@ type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let worker_id = Uuid::new_v4().to_string();
     let session_id = Uuid::new_v4().to_string();
-    let generation = 1_u64;
     let runtime_dir = std::env::temp_dir().join(format!("aphelion-{}", Uuid::new_v4()));
     tokio::fs::create_dir(&runtime_dir).await?;
     tokio::fs::set_permissions(&runtime_dir, std::fs::Permissions::from_mode(0o700)).await?;
@@ -29,28 +27,57 @@ async fn main() -> Result<()> {
         return Err(format!("mock worker binary not found at {} (build the whole workspace)", worker_executable.display()).into());
     }
 
-    println!("supervisor: listening at {}", socket_path.display());
-    let mut child = Command::new(worker_executable)
-        .arg("--socket").arg(&socket_path)
-        .arg("--worker-id").arg(&worker_id)
-        .arg("--generation").arg(generation.to_string())
-        .stdin(Stdio::null())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .kill_on_drop(true)
-        .spawn()?;
+    let policy = RestartPolicy::default();
+    let mut generation = 1_u64;
+    let mut restarts = 0_u32;
+    loop {
+        let worker_id = Uuid::new_v4().to_string();
+        println!("supervisor: starting worker generation {generation} ({worker_id})");
+        let mut child = Command::new(&worker_executable)
+            .arg("--socket").arg(&socket_path)
+            .arg("--worker-id").arg(&worker_id)
+            .arg("--generation").arg(generation.to_string())
+            .stdin(Stdio::null())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .kill_on_drop(true)
+            .spawn()?;
 
-    let result = run_demo(&listener, &mut child, &worker_id, generation, &session_id).await;
-    let graceful_wait = if result.is_ok() {
-        Duration::from_secs(2)
-    } else {
-        Duration::ZERO
-    };
-    let status = reap_worker(&mut child, graceful_wait).await?;
-    println!("supervisor: worker process exited with {status}");
+        let result = run_demo(&listener, &mut child, &worker_id, generation, &session_id).await;
+        let graceful_wait = if result.is_ok() {
+            Duration::from_secs(2)
+        } else {
+            Duration::ZERO
+        };
+        let status = reap_worker(&mut child, graceful_wait).await?;
+        println!("supervisor: worker generation {generation} exited with {status}");
+
+        if result.is_ok() && status.success() {
+            break;
+        }
+
+        let failure = result.err()
+            .map(|error| error.to_string())
+            .unwrap_or_else(|| format!("worker exited unsuccessfully with {status}"));
+        let Some(delay) = policy.delay_before_restart(restarts) else {
+            let _ = tokio::fs::remove_file(&socket_path).await;
+            let _ = tokio::fs::remove_dir(&runtime_dir).await;
+            return Err(format!("worker restart budget exhausted after {restarts} retries: {failure}").into());
+        };
+
+        restarts += 1;
+        generation = generation.checked_add(1).ok_or("worker generation exhausted")?;
+        println!(
+            "supervisor: worker failed ({failure}); retry {restarts}/{} in {} ms",
+            policy.max_restarts,
+            delay.as_millis()
+        );
+        tokio::time::sleep(delay).await;
+    }
+
     let _ = tokio::fs::remove_file(&socket_path).await;
     let _ = tokio::fs::remove_dir(&runtime_dir).await;
-    result
+    Ok(())
 }
 
 async fn run_demo(
