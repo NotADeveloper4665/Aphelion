@@ -310,6 +310,14 @@ jobs:
             trap - EXIT
             grep -Fq 'received SIGINT; stopping host' "$output_file"
             grep -Fq 'worker generation 1 exited with exit status: 0' "$output_file"
+            grep -Eq '"health_schema_version":1' "$output_file"
+            grep -Eq '"observed_at_unix_ms":[1-9][0-9]*' "$output_file"
+            grep -Eq '"host_uptime_ms":[1-9][0-9]*' "$output_file"
+            grep -Fq '"capture":{"state":"unavailable","reason":"structured_health_not_exposed_by_syzygy_adapter"}' "$output_file"
+            grep -Fq '"encoder":{"state":"unavailable","reason":"structured_health_not_exposed_by_syzygy_adapter"}' "$output_file"
+            grep -Fq '"audio":{"state":"unavailable","reason":"structured_health_not_exposed_by_syzygy_adapter"}' "$output_file"
+            grep -Fq '"input":{"state":"unavailable","reason":"structured_health_not_exposed_by_syzygy_adapter"}' "$output_file"
+            grep -Fq '"network":{"state":"unavailable","reason":"structured_health_not_exposed_by_syzygy_adapter"}' "$output_file"
             test -e "$stop_marker"
             child_pid="$(cat "$child_pid_file")"
             ! kill -0 "$child_pid" 2>/dev/null
