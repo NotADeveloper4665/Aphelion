@@ -1,0 +1,10 @@
+[package]
+name = "aphelion-streamer"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "aphelion_streamer"
+path = "src/lib.rs"
+
+[dependencies]

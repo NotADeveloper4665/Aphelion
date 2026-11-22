@@ -1,3 +1,3 @@
 [workspace]
-members = ["supervisor"]
+members = ["supervisor", "streamer"]
 resolver = "2"
