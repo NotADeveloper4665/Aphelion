@@ -12,13 +12,29 @@ use uuid::Uuid;
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
+struct RuntimeDirectory {
+    directory: std::path::PathBuf,
+    socket: std::path::PathBuf,
+}
+
+impl Drop for RuntimeDirectory {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.socket);
+        let _ = std::fs::remove_dir(&self.directory);
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let session_id = Uuid::new_v4().to_string();
     let runtime_dir = std::env::temp_dir().join(format!("aphelion-{}", Uuid::new_v4()));
     tokio::fs::create_dir(&runtime_dir).await?;
-    tokio::fs::set_permissions(&runtime_dir, std::fs::Permissions::from_mode(0o700)).await?;
     let socket_path = runtime_dir.join("worker.sock");
+    let _runtime_directory = RuntimeDirectory {
+        directory: runtime_dir.clone(),
+        socket: socket_path.clone(),
+    };
+    tokio::fs::set_permissions(&runtime_dir, std::fs::Permissions::from_mode(0o700)).await?;
     let listener = UnixListener::bind(&socket_path)?;
 
     let executable = env::current_exe()?;
@@ -71,8 +87,6 @@ async fn main() -> Result<()> {
             .map(|error| error.to_string())
             .unwrap_or_else(|| format!("worker exited unsuccessfully with {status}"));
         let Some(delay) = policy.delay_before_restart(restarts) else {
-            let _ = tokio::fs::remove_file(&socket_path).await;
-            let _ = tokio::fs::remove_dir(&runtime_dir).await;
             return Err(format!("worker restart budget exhausted after {restarts} retries: {failure}").into());
         };
 
@@ -86,8 +100,6 @@ async fn main() -> Result<()> {
         tokio::time::sleep(delay).await;
     }
 
-    let _ = tokio::fs::remove_file(&socket_path).await;
-    let _ = tokio::fs::remove_dir(&runtime_dir).await;
     Ok(())
 }
 
@@ -336,6 +348,19 @@ mod tests {
         drop(writer);
         let disconnected = read_message(&mut BufReader::new(reader)).await;
         assert!(disconnected.unwrap_err().to_string().contains("disconnected"));
+    }
+
+    #[test]
+    fn runtime_directory_guard_removes_socket_and_directory() {
+        let directory = env::temp_dir().join(format!("aphelion-runtime-test-{}", Uuid::new_v4()));
+        std::fs::create_dir(&directory).expect("create runtime directory");
+        let socket = directory.join("worker.sock");
+        std::fs::write(&socket, []).expect("create socket placeholder");
+
+        drop(RuntimeDirectory { directory: directory.clone(), socket: socket.clone() });
+
+        assert!(!socket.exists());
+        assert!(!directory.exists());
     }
 
     #[tokio::test]
