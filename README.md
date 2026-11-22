@@ -2,7 +2,7 @@
 
 Aphelion is an independently developed, local-first Linux game-streaming host. It selectively inherits and progressively replaces components from Syzygy while maintaining a separate project, roadmap, and release lifecycle.
 
-**Project status:** CI-verified Rust control-plane prototype with bounded worker restart/backoff and versioned local IPC. A persistent runtime launcher can supervise an existing Syzygy host process. Aphelion does not yet implement its own media path, and a real Moonlight stream through the packaged supervisor remains unverified.
+**Project status:** CI-verified Rust control-plane prototype with bounded worker restart/backoff and versioned local IPC. The maintainer has observed a real phone Moonlight stream through the supervisor-managed Syzygy process. Aphelion still delegates all media handling to Syzygy, and managed-process shutdown on the real host remains to be confirmed.
 
 ## Initial direction
 

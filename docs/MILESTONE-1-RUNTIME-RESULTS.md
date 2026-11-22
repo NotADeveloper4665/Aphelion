@@ -17,6 +17,7 @@ This confirms the first real client connection and active stream through the sup
 
 ## Remaining acceptance work
 
+- Current adapter shutdown invokes `-stop` on the configured Syzygy binary, then signals and reaps the foreground process group. CI verifies this order with a stub; it still needs confirmation against the real Syzygy binary on the target host.
 - Capture the supervisor's observed `Stopped` event when the Moonlight client disconnects, then verify a clean host shutdown.
 - Repeat connection and disconnect cycles and check for orphan processes or stuck sessions.
 - Compare the same Syzygy configuration when launched directly and through Aphelion for behavior regressions.
