@@ -43,6 +43,8 @@ This is not a complete dependency-license audit. The individual license texts an
 
 Cargo currently uses exact direct-dependency versions for these two crates. Transitive dependency inventory and a checked-in lockfile remain follow-up work before distribution.
 
+The experimental Rust media adapters invoke system-provided GStreamer and FFmpeg executables rather than linking or bundling their code. The software encoder specifically selects FFmpeg's `libx264`; the capture path uses GStreamer's PipeWire source plugin. These are runtime prerequisites whose licenses, build options, plugin provenance, and redistribution obligations must be reviewed for each supported Linux package. The current installable prototype bundle does not include either executable or plugin, and CI installs FFmpeg only for integration coverage.
+
 ## Required follow-up before redistribution
 
 1. Record the exact Syzygy source commit and all submodule gitlink commits used as the inheritance baseline.

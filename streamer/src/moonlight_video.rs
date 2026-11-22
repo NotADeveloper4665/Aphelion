@@ -190,7 +190,9 @@ mod tests {
         assert_eq!(nv_header(packet)[8], 0x07); // picture data, SOF, EOF.
         assert_eq!(&nv_header(packet)[12..16], &(1_u32 << 22).to_le_bytes()); // one data shard, no FEC.
         assert_eq!(&packet[MOONLIGHT_PACKET_HEADER_BYTES..MOONLIGHT_PACKET_HEADER_BYTES + 8], &[1, 42, 0, 2, 15, 0, 0, 0]);
-        assert_eq!(&packet[MOONLIGHT_PACKET_HEADER_BYTES + 8..], &[0, 0, 0, 1, 0x65, 0xaa, 0xbb]);
+        let encoded_payload = &packet[MOONLIGHT_PACKET_HEADER_BYTES + 8..];
+        assert_eq!(&encoded_payload[..7], &[0, 0, 0, 1, 0x65, 0xaa, 0xbb]);
+        assert!(encoded_payload[7..].iter().all(|byte| *byte == 0));
     }
 
     #[test]
