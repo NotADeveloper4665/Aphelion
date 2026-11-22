@@ -1,6 +1,6 @@
 # Rust control-plane prototype
 
-**Status:** Initial executable prototype; not yet locally compiled or runtime-verified.
+**Status:** Initial executable prototype; GitHub Actions build, unit tests, and supervisor/worker IPC smoke run pass. Fedora-host verification is still pending.
 
 This prototype proves a narrow Milestone 1 slice without modifying or building Syzygy:
 
@@ -42,6 +42,8 @@ Expected log sequence includes:
 - The worker is a Rust mock, not the Syzygy C++ worker.
 - No media payload crosses the control socket.
 
-## Next verification
+## Verification status
 
-Run the workspace build and smoke sequence on the target Fedora host. Then add automated tests for malformed/oversized messages, version mismatch, duplicate requests, worker crash, shutdown timeout, and supervisor loss before treating this as a stable contract.
+GitHub Actions currently performs a workspace build, IPC envelope unit tests, and an end-to-end supervisor/worker smoke run. The smoke run has confirmed handshake, start, health, stop, shutdown acknowledgement, and child exit status 0.
+
+This is not yet a full contract test suite. The next verification work is malformed/oversized messages, version mismatch, duplicate requests, worker crash, shutdown timeout, and supervisor loss. Then run the same build and smoke sequence on the target Fedora host before treating the prototype as stable.
