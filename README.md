@@ -16,6 +16,7 @@ Aphelion is an independently developed, local-first Linux game-streaming host. I
 ## Architecture documents
 
 - [Founding architecture](docs/FOUNDING-ARCHITECTURE.md) — principles, process model, control contracts, extraction gates, and milestones.
+- [Supervisor–worker contract](docs/SUPERVISOR-WORKER-CONTRACT.md) — process lifecycle, identity, versioned IPC, health, shutdown, and media boundaries (draft 0.1).
 - [Initial Syzygy inheritance audit](docs/SYZYGY-INHERITANCE-AUDIT.md) — observed capture, encoding, audio, session, and network ownership in the current Syzygy source.
 - [Licensing and attribution audit](docs/LICENSING-AND-ATTRIBUTION-AUDIT.md) — initial GPL and dependency findings; not a complete dependency audit.
 - [Source ownership and lifecycle audit](docs/SYZYGY-OWNERSHIP-AND-LIFECYCLE-AUDIT.md) — Linux input, display capture, GPU resources, and audio ownership at a pinned Syzygy commit.
