@@ -17,4 +17,6 @@ jobs:
       - name: Build workspace
         run: cargo build --workspace 
       - name: Run tests
-        run: cargo test --workspace 
+        run: cargo test --workspace
+      - name: Run supervisor-worker IPC smoke test
+        run: ./target/debug/supervisor
