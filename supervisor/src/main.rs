@@ -269,7 +269,7 @@ mod tests {
     async fn ipc_reader_accepts_frame_at_size_limit() {
         let message = message_at_frame_limit();
         let mut frame = serde_json::to_vec(&message).expect("serialize message");
-        frame.push(b'\\n');
+        frame.push(b'\n');
         let (mut writer, reader) = tokio::io::duplex(MAX_MESSAGE_BYTES + 1);
         writer.write_all(&frame).await.expect("write boundary frame");
         writer.shutdown().await.expect("close frame writer");
@@ -287,7 +287,7 @@ mod tests {
         send_message(&mut writer, &message).await.expect("send boundary frame");
         let mut frame = vec![0; MAX_MESSAGE_BYTES];
         reader.read_exact(&mut frame).await.expect("read boundary frame");
-        assert_eq!(frame.last(), Some(&b'\\n'));
+        assert_eq!(frame.last(), Some(&b'\n'));
     }
 
     #[tokio::test]
