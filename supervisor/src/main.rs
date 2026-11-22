@@ -6,7 +6,8 @@ use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     net::UnixListener,
     process::{Child, Command},
-    time::timeout,
+    signal::unix::{signal, SignalKind},
+    time::{interval, timeout},
 };
 use uuid::Uuid;
 
@@ -26,6 +27,7 @@ impl Drop for RuntimeDirectory {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let serve = env::args().any(|argument| argument == "--serve");
     let runtime_dir = std::env::temp_dir().join(format!("aphelion-{}", Uuid::new_v4()));
     tokio::fs::create_dir(&runtime_dir).await?;
     let socket_path = runtime_dir.join("worker.sock");
@@ -69,7 +71,11 @@ async fn main() -> Result<()> {
             .kill_on_drop(true)
             .spawn()?;
 
-        let result = run_demo(&listener, &mut child, &worker_id, generation).await;
+        let result = if serve {
+            run_serve(&listener, &mut child, &worker_id, generation).await
+        } else {
+            run_demo(&listener, &mut child, &worker_id, generation).await
+        };
         let graceful_wait = if result.is_ok() {
             Duration::from_secs(2)
         } else {
@@ -99,6 +105,116 @@ async fn main() -> Result<()> {
         tokio::time::sleep(delay).await;
     }
 
+    Ok(())
+}
+
+async fn run_serve(
+    listener: &UnixListener,
+    child: &mut Child,
+    worker_id: &str,
+    generation: u64,
+) -> Result<()> {
+    let (stream, _) = timeout(Duration::from_secs(5), listener.accept()).await??;
+    println!("supervisor: worker connected; validating handshake");
+    let (read, mut write) = stream.into_split();
+    let mut reader = BufReader::new(read);
+    let hello = read_message(&mut reader).await?;
+    validate_identity(&hello, worker_id, generation)?;
+    if hello.kind != "event" || hello.message_type != "worker.hello" {
+        return Err("expected worker.hello event".into());
+    }
+    if !protocol_version_supported(&hello.protocol) {
+        return Err("worker protocol version is incompatible".into());
+    }
+    if !matches!(hello.request_id.as_deref(), Some(id) if !id.is_empty()) {
+        return Err("worker.hello requires a non-empty request_id".into());
+    }
+    let missing_capabilities = missing_required_capabilities(&hello.body["capabilities"]);
+    if !missing_capabilities.is_empty() {
+        return Err(format!("worker is missing required capabilities: {}", missing_capabilities.join(", ")).into());
+    }
+    send_message(&mut write, &Message::new(
+        "response", "worker.hello_ack", worker_id, generation,
+        hello.request_id.clone(), None,
+        json!({"accepted": true, "protocol": {"major": PROTOCOL_MAJOR, "minor": PROTOCOL_MINOR}}),
+    )).await?;
+    println!("supervisor: handshake complete");
+
+    let mut sessions = SessionRegistry::default();
+    let start_id = Uuid::new_v4().to_string();
+    let start = Message::new("request", "host.start", worker_id, generation,
+        Some(start_id.clone()), None, json!({}));
+    send_message(&mut write, &start).await?;
+    let started = read_correlated_response(&mut reader, worker_id, generation, &start_id, "host.start", &mut sessions).await?;
+    println!("supervisor: start_host => {}", started.body);
+
+    let health_id = Uuid::new_v4().to_string();
+    let health = Message::new("request", "worker.health", worker_id, generation,
+        Some(health_id.clone()), None, json!({}));
+    send_message(&mut write, &health).await?;
+    let health_result = read_correlated_response(&mut reader, worker_id, generation, &health_id, "worker.health", &mut sessions).await?;
+    println!("supervisor: host is running; connect with a Moonlight client");
+    println!("supervisor: initial health => {}", health_result.body);
+
+    let mut interrupt = signal(SignalKind::interrupt())?;
+    let mut terminate = signal(SignalKind::terminate())?;
+    let mut health_poll = interval(Duration::from_secs(5));
+    health_poll.tick().await;
+
+    loop {
+        tokio::select! {
+            _ = interrupt.recv() => {
+                println!("supervisor: received SIGINT; stopping host");
+                break;
+            }
+            _ = terminate.recv() => {
+                println!("supervisor: received SIGTERM; stopping host");
+                break;
+            }
+            _ = health_poll.tick() => {
+                let request_id = Uuid::new_v4().to_string();
+                let request = Message::new("request", "worker.health", worker_id, generation,
+                    Some(request_id.clone()), None, json!({}));
+                send_message(&mut write, &request).await?;
+                let health = read_correlated_response(
+                    &mut reader, worker_id, generation, &request_id, "worker.health", &mut sessions,
+                ).await?;
+                println!("supervisor: health => {}", health.body);
+            }
+            incoming = read_message(&mut reader) => {
+                let message = incoming?;
+                validate_identity(&message, worker_id, generation)?;
+                if !protocol_version_supported(&message.protocol) {
+                    return Err("worker message protocol version is incompatible".into());
+                }
+                if message.kind != "event" {
+                    return Err("worker sent an unsolicited non-event message".into());
+                }
+                if let Some(transition) = sessions.apply_event(&message).map_err(|error| error.to_owned())? {
+                    println!("supervisor: observed worker event {transition:?}");
+                }
+            }
+        }
+    }
+
+    let stop_id = Uuid::new_v4().to_string();
+    let stop = Message::new("request", "host.stop", worker_id, generation,
+        Some(stop_id.clone()), None, json!({}));
+    send_message(&mut write, &stop).await?;
+    let stopped = read_correlated_response(&mut reader, worker_id, generation, &stop_id, "host.stop", &mut sessions).await?;
+    println!("supervisor: stop_host => {}", stopped.body);
+
+    let shutdown_id = Uuid::new_v4().to_string();
+    let shutdown = Message::new("request", "worker.shutdown", worker_id, generation,
+        Some(shutdown_id.clone()), None, json!({"reason": "supervisor_signal"}));
+    send_message(&mut write, &shutdown).await?;
+    let _acknowledgement = read_correlated_response(
+        &mut reader, worker_id, generation, &shutdown_id, "worker.shutdown", &mut sessions,
+    ).await?;
+    println!("supervisor: shutdown acknowledged; waiting for child exit");
+    drop(write);
+    drop(reader);
+    let _ = child;
     Ok(())
 }
 

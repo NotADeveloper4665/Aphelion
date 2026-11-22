@@ -2,7 +2,7 @@
 
 Aphelion is an independently developed, local-first Linux game-streaming host. It selectively inherits and progressively replaces components from Syzygy while maintaining a separate project, roadmap, and release lifecycle.
 
-**Project status:** CI-verified Rust control-plane prototype with bounded worker restart/backoff and versioned local IPC. No streaming implementation is present yet.
+**Project status:** CI-verified Rust control-plane prototype with bounded worker restart/backoff and versioned local IPC. A persistent runtime launcher can supervise an existing Syzygy host process. Aphelion does not yet implement its own media path, and a real Moonlight stream through the packaged supervisor remains unverified.
 
 ## Initial direction
 
@@ -18,6 +18,8 @@ Aphelion is an independently developed, local-first Linux game-streaming host. I
 The executable Milestone 1 slice is on the [`prototype/rust-control-plane`](https://github.com/NotADeveloper4665/Aphelion/tree/prototype/rust-control-plane) branch. It builds a Rust supervisor, a mock-worker, and a separate Syzygy process adapter that exchange versioned JSON over a local Unix socket. The supervisor bounds worker restarts with exponential backoff, validates worker identity and response correlation, and cleans up child processes. Exact request retries replay their cached response; host start and stop remain idempotent, while Moonlight client sessions are observed as worker-originated events. See [build and run instructions](docs/CONTROL-PLANE-PROTOTYPE.md).
 
 The Syzygy adapter can launch and stop an existing Syzygy binary and report process health plus observed client counts from Syzygy logs. It does not modify Syzygy or claim stream readiness, apply unverified stream settings, or implement media handling inside Aphelion. See the adapter boundary document for current limits.
+
+The Actions workflow also produces a temporary Linux x86_64 prototype bundle on successful branch pushes. See [runtime prototype instructions](docs/PROTOTYPE-RUNTIME-TEST.md) for download and first-run steps. Fedora, real capture/encoding, and Moonlight client acceptance remain pending.
 
 ## Architecture documents
 

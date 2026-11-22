@@ -1,0 +1,18 @@
+#!/bin/sh
+set -eu
+
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+
+if [ -z "${APHELION_SYZYGY_EXECUTABLE:-}" ]; then
+    printf '%s\n' "Set APHELION_SYZYGY_EXECUTABLE to the existing Syzygy host binary." >&2
+    printf '%s\n' 'Optional Syzygy arguments belong in APHELION_SYZYGY_ARGS as a JSON string array.' >&2
+    exit 2
+fi
+
+if [ ! -x "$APHELION_SYZYGY_EXECUTABLE" ]; then
+    printf 'Syzygy executable is missing or not executable: %s\n' "$APHELION_SYZYGY_EXECUTABLE" >&2
+    exit 2
+fi
+
+export APHELION_WORKER_KIND=syzygy
+exec "$script_dir/supervisor" --serve "$@"
