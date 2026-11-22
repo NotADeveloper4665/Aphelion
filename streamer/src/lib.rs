@@ -13,6 +13,9 @@ use std::{
 pub mod rtsp;
 pub mod crypto;
 pub mod fec;
+pub mod capture;
+pub mod moonlight_session;
+pub mod encoder;
 
 const RTP_HEADER_LEN: usize = 12;
 const H264_FU_A_TYPE: u8 = 28;

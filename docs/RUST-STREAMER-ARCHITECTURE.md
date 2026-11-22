@@ -92,8 +92,8 @@ On worker or device failure, stop admitting work, release queued frames and GPU 
 ## Immediate implementation sequence
 
 1. Architecture and philosophy documents; bounded RTSP parser; generic Reed-Solomon block encoder; video AES-GCM envelope primitive.
-2. Moonlight frame packet layout and FEC metadata, tested with golden vectors.
-3. Authenticated RTSP session state machine, pairing/key derivation, and UDP stream association.
-4. Portal/PipeWire capture backend with explicit DMA-BUF or mapped-frame ownership.
-5. Software H.264 encoder adapter, then capability-gated hardware backends.
-6. Join the stages in the Rust worker, add lifecycle/health signals, and run hardware/client acceptance before defaulting to it.
+2. Portal-authorized PipeWire/GStreamer BGRA capture and low-latency software H.264 encoding adapters, with explicit timestamps and bounded encoder output.
+3. Conservative RTSP session ordering, CSeq correlation, and duplicate replay; pairing, authentication, SDP capability parsing, and key derivation remain open.
+4. Moonlight frame packet layout and FEC metadata, tested with differential golden vectors against the pinned compatibility baseline.
+5. Complete authenticated session and UDP stream association; then join capture, encoding, packetization, FEC, encryption, and socket lifecycle in the Rust worker.
+6. Add hardware encoders and zero-copy buffers only after capability and ownership tests; run hardware/client acceptance before defaulting to the Rust path.
