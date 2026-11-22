@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::{collections::HashSet, time::Duration};
+use std::{collections::{HashMap, HashSet}, time::Duration};
 
 pub const PROTOCOL_MAJOR: u16 = 1;
 pub const PROTOCOL_MINOR: u16 = 0;
@@ -167,6 +167,51 @@ impl SessionIntent {
         Ok(())
     }
 }
+
+
+/// Maps an adapter-private process token to a stable session ID within one
+/// worker generation. The source token is never returned or serialized.
+#[derive(Debug)]
+pub struct SessionIdMapper {
+    worker_generation: u64,
+    next_id: u64,
+    source_to_session: HashMap<String, String>,
+}
+
+impl SessionIdMapper {
+    pub fn new(worker_generation: u64) -> Self {
+        Self {
+            worker_generation,
+            next_id: 1,
+            source_to_session: HashMap::new(),
+        }
+    }
+
+    /// Return the existing ID for a duplicate start, or allocate a new ID.
+    pub fn start(&mut self, source_token: &str) -> Result<(String, bool), &'static str> {
+        if source_token.trim().is_empty() {
+            return Err("source session token must not be empty");
+        }
+        if let Some(session_id) = self.source_to_session.get(source_token) {
+            return Ok((session_id.clone(), false));
+        }
+        let sequence = self.next_id;
+        self.next_id = self.next_id.checked_add(1).ok_or("session ID sequence exhausted")?;
+        let session_id = format!("session-{}-{sequence}", self.worker_generation);
+        self.source_to_session.insert(source_token.to_owned(), session_id.clone());
+        Ok((session_id, true))
+    }
+
+    /// Remove the private token and return only the public session ID.
+    pub fn stop(&mut self, source_token: &str) -> Option<String> {
+        self.source_to_session.remove(source_token)
+    }
+
+    pub fn active_count(&self) -> usize {
+        self.source_to_session.len()
+    }
+}
+
 
 impl Message {
     pub fn new(
@@ -360,6 +405,42 @@ mod tests {
 
         let unknown = Message::new("event", "worker.metrics", "worker-a", 1, None, None, json!({}));
         assert_eq!(sessions.apply_event(&unknown).expect("unknown compatible event"), None);
+    }
+
+
+    #[test]
+    fn session_id_mapper_hides_and_scopes_reused_source_tokens() {
+        let mut first_generation = SessionIdMapper::new(7);
+        let (first_id, created) = first_generation.start("opaque-process-token")
+            .expect("map session start");
+        assert!(created);
+        assert_eq!(first_id, "session-7-1");
+
+        let (duplicate_id, created) = first_generation.start("opaque-process-token")
+            .expect("map duplicate start");
+        assert!(!created);
+        assert_eq!(duplicate_id, first_id);
+        assert_eq!(first_generation.active_count(), 1);
+
+        assert_eq!(first_generation.stop("opaque-process-token"), Some(first_id));
+        assert_eq!(first_generation.active_count(), 0);
+
+        let (reused_id, created) = first_generation.start("opaque-process-token")
+            .expect("map reused source token");
+        assert!(created);
+        assert_eq!(reused_id, "session-7-2");
+
+        let (new_generation_id, _) = SessionIdMapper::new(8)
+            .start("opaque-process-token")
+            .expect("map token in new generation");
+        assert_eq!(new_generation_id, "session-8-1");
+    }
+
+    #[test]
+    fn session_id_mapper_rejects_empty_tokens_and_unknown_stops() {
+        let mut mapper = SessionIdMapper::new(1);
+        assert!(mapper.start(" ").is_err());
+        assert_eq!(mapper.stop("missing"), None);
     }
 
     #[test]

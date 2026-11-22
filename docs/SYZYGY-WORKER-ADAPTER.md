@@ -29,7 +29,7 @@ The Aphelion-owned adapter should be a separate executable that:
 3. Translates Aphelion's process-agnostic `SessionIntent` into validated Syzygy configuration and launch arguments; it must not place Syzygy-specific fields in the supervisor schema.
 4. Reports process health separately from capture, encoder, audio, input, and network health. It reports a subsystem as unavailable until Syzygy exposes a measured value with defined semantics.
 5. Implements shutdown with bounded signal escalation and confirms descendants are gone before acknowledging process teardown.
-6. Reports observed client activity using adapter-generated IDs scoped to a worker generation only if the adapter can correlate start and stop safely. Until then, it reports aggregate counts and does not fabricate stable session identities.
+6. Reports observed client activity using adapter-generated IDs scoped to a worker generation only if the adapter can correlate start and stop safely. The Rust contract now provides a mapper that keeps an adapter-private source token out of the public ID and issues a new ID if that token is reused. Until correlation is confirmed, report aggregate counts and do not fabricate stable session identities.
 
 The current `session.start` and `session.stop` commands should not be wired to fake per-client actions. Before the real adapter is considered complete, Aphelion must either add and test an Aphelion-side bridge for these operations or revise the external contract to distinguish worker start/shutdown from client-session events. That decision must preserve Moonlight behavior and keep media payloads off the control socket.
 
