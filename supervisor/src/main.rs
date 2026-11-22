@@ -1,0 +1,148 @@
+use aphelion_supervisor::{Message, PROTOCOL_MAJOR, PROTOCOL_MINOR, MAX_MESSAGE_BYTES};
+use serde_json::{json, Value};
+use std::{env, path::PathBuf, process::Stdio, time::Duration};
+use tokio::{
+    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+    net::{UnixListener, UnixStream},
+    process::{Child, Command},
+    time::timeout,
+};
+use uuid::Uuid;
+
+type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let worker_id = Uuid::new_v4().to_string();
+    let session_id = Uuid::new_v4().to_string();
+    let generation = 1_u64;
+    let runtime_dir = std::env::temp_dir().join(format!("aphelion-{}", Uuid::new_v4()));
+    tokio::fs::create_dir(&runtime_dir).await?;
+    let socket_path = runtime_dir.join("worker.sock");
+    let listener = UnixListener::bind(&socket_path)?;
+
+    let executable = env::current_exe()?;
+    let worker_executable = executable.parent().ok_or("supervisor has no parent directory")?.join("mock-worker");
+    if !worker_executable.is_file() {
+        return Err(format!("mock worker binary not found at {} (build the whole workspace)", worker_executable.display()).into());
+    }
+
+    println!("supervisor: listening at {}", socket_path.display());
+    let mut child = Command::new(worker_executable)
+        .arg("--socket").arg(&socket_path)
+        .arg("--worker-id").arg(&worker_id)
+        .arg("--generation").arg(generation.to_string())
+        .stdin(Stdio::null())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .kill_on_drop(true)
+        .spawn()?;
+
+    let result = run_demo(&listener, &mut child, &worker_id, generation, &session_id).await;
+    if result.is_err() && child.id().is_some() {
+        let _ = child.kill().await;
+    }
+    let status = timeout(Duration::from_secs(3), child.wait()).await??;
+    println!("supervisor: worker process exited with {status}");
+    let _ = tokio::fs::remove_file(&socket_path).await;
+    let _ = tokio::fs::remove_dir(&runtime_dir).await;
+    result
+}
+
+async fn run_demo(
+    listener: &UnixListener,
+    child: &mut Child,
+    worker_id: &str,
+    generation: u64,
+    session_id: &str,
+) -> Result<()> {
+    let (stream, _) = timeout(Duration::from_secs(5), listener.accept()).await??;
+    println!("supervisor: worker connected; validating handshake");
+    let (read, mut write) = stream.into_split();
+    let mut reader = BufReader::new(read);
+    let hello = read_message(&mut reader).await?;
+    validate_identity(&hello, worker_id, generation)?;
+    if hello.kind != "event" || hello.message_type != "worker.hello" {
+        return Err("expected worker.hello event".into());
+    }
+    if hello.protocol.major != PROTOCOL_MAJOR || hello.protocol.minor > PROTOCOL_MINOR {
+        return Err("worker protocol version is incompatible".into());
+    }
+    send_message(&mut write, &Message::new(
+        "response", "worker.hello_ack", worker_id, generation,
+        hello.request_id.clone(), None,
+        json!({"accepted": true, "protocol": {"major": PROTOCOL_MAJOR, "minor": PROTOCOL_MINOR}}),
+    )).await?;
+    println!("supervisor: handshake complete");
+
+    let start_id = Uuid::new_v4().to_string();
+    let start = Message::new("request", "session.start", worker_id, generation,
+        Some(start_id.clone()), Some(session_id.to_owned()), json!({"audio_enabled": false}));
+    send_message(&mut write, &start).await?;
+    let started = read_message(&mut reader).await?;
+    validate_response(&started, worker_id, generation, &start_id, "session.start")?;
+    println!("supervisor: start_session => {}", started.body);
+
+    let health_id = Uuid::new_v4().to_string();
+    let health = Message::new("request", "worker.health", worker_id, generation,
+        Some(health_id.clone()), None, json!({}));
+    send_message(&mut write, &health).await?;
+    let health_result = read_message(&mut reader).await?;
+    validate_response(&health_result, worker_id, generation, &health_id, "worker.health")?;
+    println!("supervisor: get_health => {}", health_result.body);
+
+    let stop_id = Uuid::new_v4().to_string();
+    let stop = Message::new("request", "session.stop", worker_id, generation,
+        Some(stop_id.clone()), Some(session_id.to_owned()), json!({}));
+    send_message(&mut write, &stop).await?;
+    let stopped = read_message(&mut reader).await?;
+    validate_response(&stopped, worker_id, generation, &stop_id, "session.stop")?;
+    println!("supervisor: stop_session => {}", stopped.body);
+
+    let shutdown_id = Uuid::new_v4().to_string();
+    let shutdown = Message::new("request", "worker.shutdown", worker_id, generation,
+        Some(shutdown_id.clone()), None, json!({"reason": "prototype_complete"}));
+    send_message(&mut write, &shutdown).await?;
+    let acknowledgement = read_message(&mut reader).await?;
+    validate_response(&acknowledgement, worker_id, generation, &shutdown_id, "worker.shutdown")?;
+    println!("supervisor: shutdown acknowledged; waiting for child exit");
+    drop(write);
+    drop(reader);
+    let _ = child;
+    Ok(())
+}
+
+async fn read_message<R: tokio::io::AsyncBufRead + Unpin>(reader: &mut R) -> Result<Message> {
+    let mut line = Vec::new();
+    let count = timeout(Duration::from_secs(5), reader.read_until(b'\n', &mut line)).await??;
+    if count == 0 { return Err("worker disconnected before replying".into()); }
+    if line.len() > MAX_MESSAGE_BYTES { return Err("IPC message exceeds size limit".into()); }
+    Ok(serde_json::from_slice(&line)?)
+}
+
+async fn send_message<W: tokio::io::AsyncWrite + Unpin>(writer: &mut W, message: &Message) -> Result<()> {
+    let mut bytes = serde_json::to_vec(message)?;
+    if bytes.len() > MAX_MESSAGE_BYTES { return Err("outgoing IPC message exceeds size limit".into()); }
+    bytes.push(b'\n');
+    writer.write_all(&bytes).await?;
+    writer.flush().await?;
+    Ok(())
+}
+
+fn validate_identity(message: &Message, worker_id: &str, generation: u64) -> Result<()> {
+    if message.worker_instance_id != worker_id || message.worker_generation != generation {
+        return Err("worker identity/generation mismatch".into());
+    }
+    Ok(())
+}
+
+fn validate_response(message: &Message, worker_id: &str, generation: u64, request_id: &str, message_type: &str) -> Result<()> {
+    validate_identity(message, worker_id, generation)?;
+    if message.kind != "response" || message.message_type != message_type || message.request_id.as_deref() != Some(request_id) {
+        return Err(format!("unexpected or uncorrelated response for {message_type}").into());
+    }
+    if message.protocol.major != PROTOCOL_MAJOR {
+        return Err("response protocol major version mismatch".into());
+    }
+    Ok(())
+}
