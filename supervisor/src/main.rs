@@ -24,7 +24,8 @@ async fn main() -> Result<()> {
     let executable = env::current_exe()?;
     let worker_name = match env::var("APHELION_WORKER_KIND").as_deref() {
         Ok("syzygy") => "syzygy-worker",
-        _ => "mock-worker",
+        Ok("mock") | Err(_) => "mock-worker",
+        Ok(other) => return Err(format!("unsupported APHELION_WORKER_KIND: {other}").into()),
     };
     let worker_executable = executable.parent().ok_or("supervisor has no parent directory")?.join(worker_name);
     if !worker_executable.is_file() {
