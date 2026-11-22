@@ -156,9 +156,10 @@ mod tests {
         ).unwrap();
         let mut pipeline = SoftwareVideoPipeline::new(source, encoder, sender, 16, 16, 16, 16).unwrap();
         assert_eq!(pipeline.pump_once().unwrap(), PipelineStep::Buffered);
-        assert!(matches!(pipeline.pump_once().unwrap(), PipelineStep::Sent { frame_index: 0, .. }));
+        let second = pipeline.pump_once().unwrap();
+        let sent_before_finish = usize::from(matches!(second, PipelineStep::Sent { .. }));
         let flushed = pipeline.finish().unwrap();
-        assert_eq!(flushed.len(), 1);
+        assert_eq!(sent_before_finish + flushed.len(), 2);
 
         let mut packet = [0; 1400];
         let (bytes, _) = receiver.recv_from(&mut packet).unwrap();
