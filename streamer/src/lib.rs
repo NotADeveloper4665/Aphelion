@@ -1,9 +1,9 @@
 //! Experimental Rust media-plane building blocks.
 //!
-//! This crate packetizes already-encoded H.264 NAL units as standard RTP and
-//! sends them over UDP. It is not a Moonlight transport: it does not implement
-//! Moonlight headers, encryption, FEC, congestion control, pacing, RTSP, or
-//! capture/encoding. The supervisor control socket is not used for media.
+//! Experimental capture, software encoding, RTSP lifecycle, Moonlight video framing,
+//! and standard-RTP transport building blocks. The Moonlight packetizer currently emits
+//! data-only packets without parity and is not a complete client-compatible host.
+//! The supervisor control socket is not used for media.
 
 use std::{
     io,
@@ -16,6 +16,7 @@ pub mod fec;
 pub mod capture;
 pub mod moonlight_session;
 pub mod encoder;
+pub mod moonlight_video;
 
 const RTP_HEADER_LEN: usize = 12;
 const H264_FU_A_TYPE: u8 = 28;
