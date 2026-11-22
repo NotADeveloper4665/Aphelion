@@ -110,4 +110,31 @@ mod tests {
         let encoded = serde_json::to_value(message).expect("message should serialize");
         assert!(encoded.get("session_id").is_none());
     }
+
+    #[test]
+    fn protocol_compatibility_requires_same_major_and_supported_minor() {
+        assert!(protocol_version_supported(&ProtocolVersion { major: PROTOCOL_MAJOR, minor: PROTOCOL_MINOR }));
+        assert!(!protocol_version_supported(&ProtocolVersion { major: PROTOCOL_MAJOR + 1, minor: 0 }));
+        assert!(!protocol_version_supported(&ProtocolVersion { major: PROTOCOL_MAJOR.saturating_sub(1), minor: 0 }));
+        assert!(!protocol_version_supported(&ProtocolVersion { major: PROTOCOL_MAJOR, minor: PROTOCOL_MINOR + 1 }));
+    }
+
+    #[test]
+    fn worker_identity_rejects_wrong_instance_and_stale_generation() {
+        let message = Message::new(
+            "event",
+            "worker.hello",
+            "worker-a",
+            7,
+            Some("hello-1".to_owned()),
+            None,
+            json!({}),
+        );
+
+        assert!(message_identity_matches(&message, "worker-a", 7));
+        assert!(!message_identity_matches(&message, "worker-b", 7));
+        assert!(!message_identity_matches(&message, "worker-a", 6));
+        assert!(!message_identity_matches(&message, "worker-a", 8));
+    }
+
 }
