@@ -39,6 +39,21 @@ jobs:
           grep -Fq "stop_host =>" <<<"$output"
           grep -Fq "worker generation 2 exited with exit status: 0" <<<"$output"
 
+      - name: Stop after the bounded worker restart budget
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +e
+          output="$(APHELION_TEST_CRASH_ALL_WORKERS=1 ./target/debug/supervisor 2>&1)"
+          status=$?
+          set -e
+          printf '%s\n' "$output"
+          test "$status" -ne 0
+          grep -Fq '"retries_used":3' <<<"$output"
+          grep -Fq '"retry_limit":3' <<<"$output"
+          grep -Fq '"failed_generation":4' <<<"$output"
+          grep -Fq 'worker restart budget exhausted after 3 retries' <<<"$output"
+
       - name: Verify Syzygy process adapter with a stub binary
         shell: bash
         run: |

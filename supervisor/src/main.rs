@@ -94,6 +94,7 @@ async fn main() -> Result<()> {
 
     let policy = RestartPolicy::default();
     let inject_first_worker_crash = env::var_os("APHELION_TEST_CRASH_FIRST_WORKER").is_some();
+    let inject_all_worker_crashes = env::var_os("APHELION_TEST_CRASH_ALL_WORKERS").is_some();
     let mut generation = 1_u64;
     let mut restarts = 0_u32;
     loop {
@@ -104,7 +105,7 @@ async fn main() -> Result<()> {
             .arg("--socket").arg(&socket_path)
             .arg("--worker-id").arg(&worker_id)
             .arg("--generation").arg(generation.to_string());
-        if inject_first_worker_crash && restarts == 0 {
+        if inject_all_worker_crashes || (inject_first_worker_crash && restarts == 0) {
             command.arg("--crash-on-start");
         }
         let mut child = command
@@ -138,6 +139,12 @@ async fn main() -> Result<()> {
             .map(|error| error.to_string())
             .unwrap_or_else(|| format!("worker exited unsuccessfully with {status}"));
         let Some(delay) = policy.delay_before_restart(restarts) else {
+            println!("supervisor: worker restart exhausted => {}", json!({
+                "retries_used": restarts,
+                "retry_limit": policy.max_restarts,
+                "failed_generation": generation,
+                "reason": failure,
+            }));
             return Err(format!("worker restart budget exhausted after {restarts} retries: {failure}").into());
         };
 

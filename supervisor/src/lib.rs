@@ -451,6 +451,23 @@ mod tests {
         assert_eq!(sessions.apply_event(&unknown).expect("unknown compatible event"), None);
     }
 
+    #[test]
+    fn session_registry_tracks_peak_concurrency_without_counting_duplicate_events() {
+        let mut sessions = SessionRegistry::default();
+        let event = |kind: &str, id: &str| Message::new(
+            "event", kind, "worker-a", 1, None, Some(id.to_owned()), json!({}));
+
+        for id in ["session-a", "session-b", "session-a"] {
+            sessions.apply_event(&event("session.started", id)).expect("start event");
+        }
+        assert_eq!(sessions.started_total(), 2);
+        assert_eq!(sessions.peak_active(), 2);
+        sessions.apply_event(&event("session.stopped", "session-a")).expect("stop event");
+        sessions.apply_event(&event("session.stopped", "session-b")).expect("stop event");
+        assert_eq!(sessions.stopped_total(), 2);
+        assert_eq!(sessions.active_count(), 0);
+    }
+
 
     #[test]
     fn session_id_mapper_hides_and_scopes_reused_source_tokens() {
