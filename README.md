@@ -15,9 +15,9 @@ Aphelion is an independently developed, local-first Linux game-streaming host. I
 
 ## Rust control-plane prototype
 
-The executable Milestone 1 slice is on the [`prototype/rust-control-plane`](https://github.com/NotADeveloper4665/Aphelion/tree/prototype/rust-control-plane) branch. It builds a Rust supervisor and separate mock-worker binary that exchange versioned JSON over a local Unix socket. The supervisor bounds worker restarts with exponential backoff, validates worker identity and response correlation, and cleans up child processes. Exact request retries replay their cached response; session start and stop remain idempotent. See [build and run instructions](docs/CONTROL-PLANE-PROTOTYPE.md).
+The executable Milestone 1 slice is on the [`prototype/rust-control-plane`](https://github.com/NotADeveloper4665/Aphelion/tree/prototype/rust-control-plane) branch. It builds a Rust supervisor, a mock-worker, and a separate Syzygy process adapter that exchange versioned JSON over a local Unix socket. The supervisor bounds worker restarts with exponential backoff, validates worker identity and response correlation, and cleans up child processes. Exact request retries replay their cached response; session start and stop remain idempotent. See [build and run instructions](docs/CONTROL-PLANE-PROTOTYPE.md).
 
-This does not modify Syzygy or implement media streaming. The worker is still a Rust mock; all media handling remains unimplemented in Aphelion.
+The Syzygy adapter can launch and stop an existing Syzygy binary and report process health plus observed client counts from Syzygy logs. It does not modify Syzygy or claim stream readiness, apply unverified stream settings, or implement media handling inside Aphelion. See the adapter boundary document for current limits.
 
 ## Architecture documents
 
