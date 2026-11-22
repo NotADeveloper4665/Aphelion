@@ -17,14 +17,14 @@ This confirms the first real client connection and active stream through the sup
 
 ## Remaining acceptance work
 
-- Current adapter shutdown invokes `-stop` on the configured Syzygy binary, then signals and reaps the foreground process group. GitHub Actions now sends SIGINT and verifies this sequence with a stub. The real Syzygy shutdown path remains unconfirmed on the target host.
-- The later runtime attempt observed the supervisor's `Stopped` event when the Moonlight client disconnected, but the user then terminated matching processes by name; that is manual cleanup, not a graceful-shutdown result.
+- Current adapter shutdown invokes `-stop` on the configured Syzygy binary, then signals and reaps the foreground process group. GitHub Actions verifies this sequence with a stub; the maintainer also reports one successful Ctrl+C stop against real Syzygy. Descendant cleanup was not independently checked with a process-list snapshot.
+- An earlier runtime attempt observed the supervisor's `Stopped` event when Moonlight disconnected, then required manual name-based process termination. A later bundle added worker signal isolation and the maintainer reported that Ctrl+C stopped the host correctly.
 - Repeat connection and disconnect cycles and check for orphan processes or stuck sessions.
 - Compare the same Syzygy configuration when launched directly and through Aphelion for behavior regressions.
 - Record the exact Syzygy revision, host configuration, capture path, and encoder details for a reproducible result.
 - Complete the remaining Milestone 0 baseline rows; this smoke test does not establish the pinned baseline, hardware matrix, performance results, or long-run reliability.
 
-Milestone 1 has passed its first real-stream smoke check, but its full exit criteria are not yet met.
+Milestone 1 has a maintainer-observed real stream, disconnect event, and successful real-host Ctrl+C stop. Its full exit criteria are not yet met: subsystem-specific health is not implemented, repeated lifecycle and orphan checks remain open, compatibility against direct Syzygy launch is unmeasured, and the Milestone 0 baseline is partial.
 
 ## Follow-up runtime attempt
 
@@ -39,6 +39,6 @@ This confirms streaming and client-disconnect observation through the managed ho
 ## Ctrl+C shutdown verification
 
 **Observed:** 2026-11-22, reported by the maintainer after running the updated bundle from commit `8a8fee98a8924a018bc9d22106e3ebf77502e86d` against the installed Syzygy binary.  
-**Result:** Ctrl+C stopped the Aphelion-managed host correctly. This confirms the real-host graceful shutdown path on the maintainer's Fedora desktop. No process-list snapshot or terminal shutdown log was supplied, so descendant cleanup is recorded as user-observed rather than independently verified.
+**Result:** Ctrl+C stopped the Aphelion-managed host correctly. This confirms one real-host graceful shutdown on the maintainer's Fedora desktop. No process-list snapshot or terminal shutdown log was supplied, so descendant cleanup is recorded as user-observed rather than independently verified.
 
 This supersedes the earlier follow-up attempt's manual name-based process termination; that earlier attempt did not verify graceful shutdown.

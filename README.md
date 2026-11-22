@@ -2,7 +2,7 @@
 
 Aphelion is an independently developed, local-first Linux game-streaming host. It selectively inherits and progressively replaces components from Syzygy while maintaining a separate project, roadmap, and release lifecycle.
 
-**Project status:** CI-verified Rust control-plane prototype with bounded worker restart/backoff and versioned local IPC. The maintainer has observed a real phone Moonlight stream through the supervisor-managed Syzygy process. Aphelion still delegates all media handling to Syzygy, and managed-process shutdown on the real host remains to be confirmed.
+**Project status:** CI-verified Rust control-plane prototype with bounded worker restart/backoff and versioned local IPC. The maintainer has observed a real phone Moonlight stream and a successful Ctrl+C stop through the supervisor-managed Syzygy process. Aphelion still delegates all media handling to Syzygy; descendant cleanup was not independently checked with a process-list snapshot.
 
 ## Initial direction
 
@@ -19,9 +19,9 @@ The executable Milestone 1 slice is on the [`prototype/rust-control-plane`](http
 
 The Syzygy adapter can launch and stop an existing Syzygy binary and report process health plus observed client counts from Syzygy logs. It does not modify Syzygy or claim stream readiness, apply unverified stream settings, or implement media handling inside Aphelion. See the adapter boundary document for current limits.
 
-The Actions workflow also produces a temporary Linux x86_64 prototype bundle on successful branch pushes. See [runtime prototype instructions](docs/PROTOTYPE-RUNTIME-TEST.md) for download and first-run steps. The first real Moonlight stream is now observed; broader Fedora, hardware, lifecycle, and regression coverage remain pending.
+The Actions workflow also produces a temporary Linux x86_64 prototype bundle on successful branch pushes. See [runtime prototype instructions](docs/PROTOTYPE-RUNTIME-TEST.md) for download and first-run steps. One Fedora desktop run confirmed a real Moonlight stream and Ctrl+C shutdown; broader hardware, lifecycle, input, and regression coverage remain pending.
 
-The first maintainer-observed Moonlight phone stream through the supervisor is recorded in [Milestone 1 runtime results](docs/MILESTONE-1-RUNTIME-RESULTS.md). Full lifecycle, regression, and Milestone 0 baseline checks remain open.
+The maintainer-observed Moonlight stream, disconnect, and Ctrl+C shutdown are recorded in [Milestone 1 runtime results](docs/MILESTONE-1-RUNTIME-RESULTS.md). Milestone 1 health reporting, repeat-cycle/orphan checks, direct-versus-managed comparison, and the incomplete Milestone 0 baseline remain open.
 
 ## Architecture documents
 

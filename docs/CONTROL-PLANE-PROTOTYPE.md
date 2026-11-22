@@ -1,6 +1,6 @@
 # Rust control-plane prototype
 
-**Status:** CI-verified supervisor, mock worker, and first Syzygy process adapter. Fedora-host and real Syzygy binary verification are still pending.
+**Status:** CI-verified supervisor, mock worker, and Syzygy process adapter. A real Moonlight stream and one successful Ctrl+C stop were reported on Fedora; broader hardware and lifecycle verification remain open.
 
 This prototype proves a narrow Milestone 1 slice without modifying or building Syzygy:
 
