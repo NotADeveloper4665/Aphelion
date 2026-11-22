@@ -88,14 +88,14 @@ async fn ipc_reports_disconnected_peer() {
 async fn reaps_worker_that_crashes_before_shutdown() {
     let mut child = Command::new("sh")
         .arg("-c")
-        .arg("exit 23")
+        .arg("sleep 0.05; exit 23")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
         .expect("spawn crashing child");
 
-    let status = reap_worker(&mut child, Duration::ZERO)
+    let status = reap_worker(&mut child, Duration::from_secs(1))
         .await
         .expect("reap crashed child");
     assert_eq!(status.code(), Some(23));
