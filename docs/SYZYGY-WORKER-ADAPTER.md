@@ -1,6 +1,6 @@
 # Syzygy Worker Adapter Boundary
 
-**Status:** Source-backed integration contract; adapter not implemented  
+**Status:** Process-control adapter implemented; Moonlight client-session control is not implemented  
 **Audited source:** NotADeveloper4665/Syzygy at `c50d417c774320632cbe6fa6fc1f1a6bdfc8c58d`  
 **Scope:** Process launch, signal ownership, headless child processes, and session identity
 
@@ -32,6 +32,18 @@ The Aphelion-owned adapter should be a separate executable that:
 6. Reports observed client activity using adapter-generated IDs scoped to a worker generation only if the adapter can correlate start and stop safely. The Rust contract now provides a mapper that keeps an adapter-private source token out of the public ID and issues a new ID if that token is reused. Until correlation is confirmed, report aggregate counts and do not fabricate stable session identities.
 
 The current `session.start` and `session.stop` commands should not be wired to fake per-client actions. Before the real adapter is considered complete, Aphelion must either add and test an Aphelion-side bridge for these operations or revise the external contract to distinguish worker start/shutdown from client-session events. That decision must preserve Moonlight behavior and keep media payloads off the control socket.
+
+## Implemented adapter slice
+
+The separate Rust `syzygy-worker` executable now implements the existing versioned worker handshake and lifecycle requests. The supervisor selects it with `APHELION_WORKER_KIND=syzygy`; the worker reads the binary path from `APHELION_SYZYGY_EXECUTABLE` and optional launch arguments from `APHELION_SYZYGY_ARGS` as a JSON string array. It starts the existing binary with `-s -foreground` and `SYZYGY_MANAGED_CHILD=1`, without invoking a shell. Existing Syzygy configuration remains in effect.
+
+The current prototype's `session.start` and `session.stop` messages manage one host process per worker. They do not start or stop an individual Moonlight client. The start response explicitly reports `stream_ready=false` and `intent_applied=false`: Syzygy's current CLI does not expose a verified mapping for Aphelion's display, codec, resolution, frame-rate, and audio intent. The adapter does not alter those settings or claim that a client stream is active.
+
+Health reports whether the Syzygy process is running and an observed active-client count from Syzygy's `SYZYGY_SESSION_START/STOP` output tokens. It does not publish the process-local tokens, fabricate stable client IDs, or claim capture, encoder, audio, input, network, or latency health. If Syzygy stops, health includes its exit status. Child stdout and stderr are drained continuously.
+
+The adapter places Syzygy in its own process group. Stop and shutdown send SIGTERM, wait up to two seconds, then send SIGKILL and reap the direct child. The CI adapter scenario uses a stub executable to verify arguments, environment, process health, and teardown; this is not an integration run against a built Syzygy binary.
+
+`APHELION_SYZYGY_ARGS` must be a JSON string array. The adapter rejects supervisor-owned lifecycle flags in that array. For example: `["-auto", "-nvenc"]`. Headless launcher cleanup and real Syzygy runtime behavior still require integration testing.
 
 ## Required integration tests
 
