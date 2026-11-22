@@ -1,4 +1,4 @@
-use aphelion_supervisor::{Message, PROTOCOL_MAJOR, PROTOCOL_MINOR, MAX_MESSAGE_BYTES};
+use aphelion_supervisor::{message_identity_matches, protocol_version_supported, Message, PROTOCOL_MAJOR, PROTOCOL_MINOR, MAX_MESSAGE_BYTES};
 use serde_json::json;
 use std::{env, os::unix::fs::PermissionsExt, process::Stdio, time::Duration};
 use nix::{sys::signal::{kill, Signal}, unistd::Pid};
@@ -69,7 +69,7 @@ async fn run_demo(
     if hello.kind != "event" || hello.message_type != "worker.hello" {
         return Err("expected worker.hello event".into());
     }
-    if hello.protocol.major != PROTOCOL_MAJOR || hello.protocol.minor > PROTOCOL_MINOR {
+    if !protocol_version_supported(&hello.protocol) {
         return Err("worker protocol version is incompatible".into());
     }
     send_message(&mut write, &Message::new(
@@ -136,7 +136,7 @@ async fn send_message<W: tokio::io::AsyncWrite + Unpin>(writer: &mut W, message:
 }
 
 fn validate_identity(message: &Message, worker_id: &str, generation: u64) -> Result<()> {
-    if message.worker_instance_id != worker_id || message.worker_generation != generation {
+    if !message_identity_matches(message, worker_id, generation) {
         return Err("worker identity/generation mismatch".into());
     }
     Ok(())
@@ -147,7 +147,7 @@ fn validate_response(message: &Message, worker_id: &str, generation: u64, reques
     if message.kind != "response" || message.message_type != message_type || message.request_id.as_deref() != Some(request_id) {
         return Err(format!("unexpected or uncorrelated response for {message_type}").into());
     }
-    if message.protocol.major != PROTOCOL_MAJOR {
+    if !protocol_version_supported(&message.protocol) {
         return Err("response protocol major version mismatch".into());
     }
     Ok(())
