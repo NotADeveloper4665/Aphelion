@@ -5,7 +5,7 @@
 //! port negotiation are implemented; authentication, pairing, control-channel
 //! association, UDP ping handling, and session-key negotiation remain separate work.
 
-use std::collections::VecDeque;
+use std::{collections::VecDeque, net::{IpAddr, SocketAddr}};
 
 use crate::moonlight_sdp::{parse_moonlight_sdp, MoonlightStreamProfile};
 use crate::rtsp::RtspRequest;
@@ -142,6 +142,16 @@ impl MoonlightRtspSession {
 
     pub fn negotiated_track_ports(&self, track: MediaTrack) -> Option<NegotiatedTrackPorts> {
         self.negotiated_ports[track_index(track)]
+    }
+
+    /// Resolve the client RTP/RTCP endpoints using the address of the accepted RTSP
+    /// peer. Moonlight's SETUP Transport carries ports but no trustworthy peer address.
+    pub fn negotiated_client_endpoints(&self, track: MediaTrack, rtsp_peer: IpAddr) -> Option<(SocketAddr, SocketAddr)> {
+        let client = self.negotiated_ports[track_index(track)]?.client;
+        Some((
+            SocketAddr::new(rtsp_peer, client.rtp),
+            SocketAddr::new(rtsp_peer, client.rtcp),
+        ))
     }
 
     pub fn handle(&mut self, request: RtspRequest) -> SessionResult {
@@ -317,6 +327,10 @@ mod tests {
         assert_eq!(setup.event, SessionEvent::TrackConfigured(MediaTrack::Video));
         assert_eq!(setup.response.headers.iter().find(|(name, _)| name == "Transport").unwrap().1, "RTP/AVP/UDP;unicast;client_port=47998-47999;server_port=48000-48001;mode=play");
         assert_eq!(session.negotiated_track_ports(MediaTrack::Video).unwrap().server.rtp(), 48000);
+        assert_eq!(session.negotiated_client_endpoints(MediaTrack::Video, "192.0.2.12".parse().unwrap()).unwrap(), (
+            "192.0.2.12:47998".parse().unwrap(),
+            "192.0.2.12:47999".parse().unwrap(),
+        ));
         let play = session.handle(parse("PLAY", "rtsp://host", 3, "Session: test-session\r\n", b""));
         assert_eq!(play.response.status, 200);
         assert_eq!(session.state(), SessionState::Playing);

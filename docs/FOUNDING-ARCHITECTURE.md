@@ -208,7 +208,7 @@ These are mandatory architecture reviews, not automatic rewrite triggers. Each r
 - Compare latency, CPU/GPU use, copies, and reliability against the Thick Worker baseline.
 - Retain the old path until the new path passes equivalent tests.
 
-The first isolated Rust media-plane prototype is the `aphelion-streamer` crate: it packetizes encoded H.264 NAL units as standard RTP and sends UDP datagrams. This is an interface and transport experiment only. It is not the Moonlight wire protocol and does not replace the Syzygy path; no capture, encoder, FEC, encryption, pacing, or client interoperability is claimed. See `docs/RUST-STREAMER-PROTOTYPE.md` for scope and next extraction gates.
+The separate `aphelion-streamer` prototype has advanced beyond the original standard-RTP transport experiment. It now has a PipeWire/GStreamer capture adapter, software H.264 encoding, bounded RTSP/SDP session setup, a TCP connection adapter, Moonlight-specific video packet framing, Reed-Solomon parity generation, an AES-GCM packet envelope, and a CI integration path from synthetic captured frames through FFmpeg encoding to local UDP delivery. This prototype is not the Milestone 1 Thick Worker and does not replace the Syzygy path. Authentication, pairing, key derivation, real portal acquisition, differential wire vectors, audio/input, pacing, hardware paths, supervisor launch, and real Moonlight-client compatibility remain incomplete. See `docs/RUST-STREAMER-PROTOTYPE.md` for verified scope and the next extraction gates.
 
 **Exit:** The extracted path demonstrates measurable value, compatibility where required, and acceptable operational complexity.
 
