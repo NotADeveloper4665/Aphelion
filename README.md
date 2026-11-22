@@ -19,7 +19,9 @@ The executable Milestone 1 slice is on the [`prototype/rust-control-plane`](http
 
 The Syzygy adapter can launch and stop an existing Syzygy binary and report process health plus observed client counts from Syzygy logs. It does not modify Syzygy or claim stream readiness, apply unverified stream settings, or implement media handling inside Aphelion. See the adapter boundary document for current limits.
 
-The Actions workflow also produces a temporary Linux x86_64 prototype bundle on successful branch pushes. See [runtime prototype instructions](docs/PROTOTYPE-RUNTIME-TEST.md) for download and first-run steps. Fedora, real capture/encoding, and Moonlight client acceptance remain pending.
+The Actions workflow also produces a temporary Linux x86_64 prototype bundle on successful branch pushes. See [runtime prototype instructions](docs/PROTOTYPE-RUNTIME-TEST.md) for download and first-run steps. The first real Moonlight stream is now observed; broader Fedora, hardware, lifecycle, and regression coverage remain pending.
+
+The first maintainer-observed Moonlight phone stream through the supervisor is recorded in [Milestone 1 runtime results](docs/MILESTONE-1-RUNTIME-RESULTS.md). Full lifecycle, regression, and Milestone 0 baseline checks remain open.
 
 ## Architecture documents
 
