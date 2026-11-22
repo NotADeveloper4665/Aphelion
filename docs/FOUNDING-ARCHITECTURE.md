@@ -84,7 +84,7 @@ The current worker IPC command families are:
 - `host.stop` — stop that host process; idempotent while stopped.
 - `worker.health` and `worker.shutdown` — report lifecycle/observed health and terminate the worker.
 
-A future local user-facing API may expose desired streaming configuration, but it must not claim to start or stop an individual Moonlight client unless the worker has a tested control bridge for that operation. Moonlight client sessions are created and ended by protocol activity; the worker reports observed `session.started` / `session.stopped` events with worker-generation-scoped IDs where correlation is safe. Add commands only for concrete lifecycle or operational needs. Internal topology changes should not require an external API redesign.
+A future local user-facing API may expose desired streaming configuration, but it must not claim to start or stop an individual Moonlight client unless the worker has a tested control bridge for that operation. Moonlight client sessions are created and ended by protocol activity; the worker reports observed `session.started` / `session.stopped` events with IDs scoped to the worker instance and generation where correlation is safe. Add commands only for concrete lifecycle or operational needs. Internal topology changes should not require an external API redesign.
 
 ### 4.2 Subsystem-mirrored health
 

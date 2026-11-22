@@ -46,7 +46,7 @@ async fn run() -> Result<()> {
     eprintln!("syzygy-worker: control handshake complete for generation {generation}");
 
     let mut child: Option<ManagedChild> = None;
-    let mut sessions = SessionIdMapper::new(generation);
+    let mut sessions = SessionIdMapper::new(worker_id.clone(), generation);
     let (session_event_tx, mut session_event_rx) = mpsc::channel(64);
     let mut last_exit: Option<Value> = None;
 
@@ -622,8 +622,8 @@ mod tests {
     }
 
     #[test]
-    fn maps_log_tokens_to_generation_scoped_events_without_leaking_tokens() {
-        let mut sessions = SessionIdMapper::new(3);
+    fn maps_log_tokens_to_instance_scoped_events_without_leaking_tokens() {
+        let mut sessions = SessionIdMapper::new("worker-a", 3);
         let started = map_session_event(
             ObservedSessionLog { started: true, source_token: "private-pointer".to_owned() },
             &mut sessions,
@@ -631,7 +631,7 @@ mod tests {
             3,
         ).expect("map start event").expect("new session event");
         assert_eq!(started.message_type, "session.started");
-        assert_eq!(started.session_id.as_deref(), Some("session-3-1"));
+        assert_eq!(started.session_id.as_deref(), Some("session-worker-a-3-1"));
         assert!(!serde_json::to_string(&started).unwrap().contains("private-pointer"));
 
         let stopped = map_session_event(
@@ -641,7 +641,7 @@ mod tests {
             3,
         ).expect("map stop event").expect("known session stop event");
         assert_eq!(stopped.message_type, "session.stopped");
-        assert_eq!(stopped.session_id.as_deref(), Some("session-3-1"));
+        assert_eq!(stopped.session_id.as_deref(), Some("session-worker-a-3-1"));
         assert_eq!(sessions.active_count(), 0);
     }
 

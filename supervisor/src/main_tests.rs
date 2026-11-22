@@ -9,8 +9,8 @@ fn valid_response() -> Message {
         "worker-a",
         7,
         Some("request-a".to_owned()),
-        Some("session-a".to_owned()),
-        json!({"state": "running"}),
+        None,
+        json!({"state": "process_running"}),
     )
 }
 

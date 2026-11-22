@@ -170,17 +170,19 @@ impl SessionIntent {
 
 
 /// Maps an adapter-private process token to a stable session ID within one
-/// worker generation. The source token is never returned or serialized.
+/// worker instance and generation. The source token is never returned or serialized.
 #[derive(Debug)]
 pub struct SessionIdMapper {
+    worker_instance_id: String,
     worker_generation: u64,
     next_id: u64,
     source_to_session: HashMap<String, String>,
 }
 
 impl SessionIdMapper {
-    pub fn new(worker_generation: u64) -> Self {
+    pub fn new(worker_instance_id: impl Into<String>, worker_generation: u64) -> Self {
         Self {
+            worker_instance_id: worker_instance_id.into(),
             worker_generation,
             next_id: 1,
             source_to_session: HashMap::new(),
@@ -197,7 +199,11 @@ impl SessionIdMapper {
         }
         let sequence = self.next_id;
         self.next_id = self.next_id.checked_add(1).ok_or("session ID sequence exhausted")?;
-        let session_id = format!("session-{}-{sequence}", self.worker_generation);
+        let session_id = format!(
+            "session-{}-{}-{sequence}",
+            self.worker_instance_id,
+            self.worker_generation,
+        );
         self.source_to_session.insert(source_token.to_owned(), session_id.clone());
         Ok((session_id, true))
     }
@@ -415,11 +421,11 @@ mod tests {
 
     #[test]
     fn session_id_mapper_hides_and_scopes_reused_source_tokens() {
-        let mut first_generation = SessionIdMapper::new(7);
+        let mut first_generation = SessionIdMapper::new("worker-a", 7);
         let (first_id, created) = first_generation.start("opaque-process-token")
             .expect("map session start");
         assert!(created);
-        assert_eq!(first_id, "session-7-1");
+        assert_eq!(first_id, "session-worker-a-7-1");
 
         let (duplicate_id, created) = first_generation.start("opaque-process-token")
             .expect("map duplicate start");
@@ -433,21 +439,25 @@ mod tests {
         let (reused_id, created) = first_generation.start("opaque-process-token")
             .expect("map reused source token");
         assert!(created);
-        assert_eq!(reused_id, "session-7-2");
+        assert_eq!(reused_id, "session-worker-a-7-2");
 
-        let (new_generation_id, _) = SessionIdMapper::new(8)
+        let (new_generation_id, _) = SessionIdMapper::new("worker-a", 8)
             .start("opaque-process-token")
             .expect("map token in new generation");
-        assert_eq!(new_generation_id, "session-8-1");
+        assert_eq!(new_generation_id, "session-worker-a-8-1");
+        let (new_instance_id, _) = SessionIdMapper::new("worker-b", 7)
+            .start("opaque-process-token")
+            .expect("map token for another worker instance");
+        assert_eq!(new_instance_id, "session-worker-b-7-1");
 
         let stopped = first_generation.stop_all();
-        assert_eq!(stopped, vec!["session-7-2"]);
+        assert_eq!(stopped, vec!["session-worker-a-7-2"]);
         assert_eq!(first_generation.active_count(), 0);
     }
 
     #[test]
     fn session_id_mapper_rejects_empty_tokens_and_unknown_stops() {
-        let mut mapper = SessionIdMapper::new(1);
+        let mut mapper = SessionIdMapper::new("worker-a", 1);
         assert!(mapper.start(" ").is_err());
         assert_eq!(mapper.stop("missing"), None);
     }

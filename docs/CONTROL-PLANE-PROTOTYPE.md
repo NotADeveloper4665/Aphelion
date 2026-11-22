@@ -45,10 +45,10 @@ The design draft's process-agnostic stream intent remains a candidate for a futu
 
 - `request_id` is scoped to one worker generation. The worker caches the last 128 completed request/response pairs in FIFO order.
 - An exact retry with a cached request ID receives the original response without applying the request again. Reusing a cached ID with different content is rejected and closes the worker IPC session.
-- Retries older than the bounded cache window may be processed again. Session operations remain idempotent across distinct request IDs: starting an active session returns `created: false`; stopping an inactive session returns `was_active: false`.
+- Retries older than the bounded cache window may be processed again. Host lifecycle operations remain idempotent across distinct request IDs: starting an already-running host returns `already_running: true`; stopping an inactive host returns `was_running: false`.
 - The cache is in-memory and is discarded when the worker exits. It does not provide crash-safe exactly-once execution or restore desired sessions after a restart.
 
-Worker-originated `session.started` and `session.stopped` events update an idempotent active-session registry while the supervisor waits for request-correlated responses. The Syzygy adapter maps private runtime tokens from paired log lines to IDs scoped by worker generation and emits lifecycle events; the source token itself is not exposed in the control protocol. For the source-backed real-worker integration boundary, see [Syzygy worker adapter](SYZYGY-WORKER-ADAPTER.md).
+Worker-originated `session.started` and `session.stopped` events update an idempotent active-session registry while the supervisor waits for request-correlated responses. The Syzygy adapter maps private runtime tokens from paired log lines to IDs scoped by worker instance and generation and emits lifecycle events; the source token itself is not exposed in the control protocol. For the source-backed real-worker integration boundary, see [Syzygy worker adapter](SYZYGY-WORKER-ADAPTER.md).
 
 ## Deliberate prototype limits
 
