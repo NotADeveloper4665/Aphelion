@@ -1,11 +1,11 @@
 # Rust control-plane prototype
 
-**Status:** Initial executable prototype; GitHub Actions build, unit tests, and supervisor/worker IPC smoke run pass. Fedora-host verification is still pending.
+**Status:** CI-verified supervisor, mock worker, and first Syzygy process adapter. Fedora-host and real Syzygy binary verification are still pending.
 
 This prototype proves a narrow Milestone 1 slice without modifying or building Syzygy:
 
 - the Rust supervisor creates a private, per-run Unix socket directory;
-- the supervisor launches a separate mock-worker process;
+- by default the supervisor launches a separate mock-worker process; with `APHELION_WORKER_KIND=syzygy`, it launches the separate `syzygy-worker` adapter;
 - the worker connects back and identifies its instance and generation;
 - both processes exchange versioned JSON messages using newline-delimited framing;
 - the supervisor checks that the worker advertises session start/stop, health, and shutdown capabilities before accepting the handshake;
@@ -24,7 +24,7 @@ cargo build --workspace --release
 ./target/release/supervisor
 ```
 
-The supervisor locates `mock-worker` beside its own executable. Build the entire workspace rather than only the supervisor binary.
+The supervisor locates the selected worker beside its own executable. Build the entire workspace rather than only the supervisor binary. To use the Syzygy adapter, set `APHELION_WORKER_KIND=syzygy` and `APHELION_SYZYGY_EXECUTABLE=/path/to/syzygy`; optional existing Syzygy CLI settings can be provided as a JSON string array in `APHELION_SYZYGY_ARGS`.
 
 Expected log sequence includes:
 
@@ -64,11 +64,11 @@ Worker-originated `session.started` and `session.stopped` events update an idemp
 - `SOCK_STREAM` with newline-delimited JSON; this is a prototype choice, not the final transport decision.
 - 64 KiB maximum message size.
 - No external client API, heartbeat, peer-credential verification, durable request deduplication, or real media subsystem. Restart/backoff and desired-session replay are verified only with the mock worker; recovery of a real Syzygy worker and its sessions is not implemented.
-- The worker is a Rust mock, not the Syzygy C++ worker.
+- The mock remains the default; the Syzygy adapter is a Rust process owner around the existing C++ host, not a replacement streaming implementation.
 - No media payload crosses the control socket.
 
 ## Verification status
 
-GitHub Actions performs a workspace build, IPC envelope unit tests, a normal end-to-end supervisor/worker smoke run, and a fault-injected restart recovery run. The normal smoke run checks handshake, start, health, stop, shutdown acknowledgement, and child exit status 0. The restart test requires the first worker to fail during `session.start`, then checks retry logging, generation 2, and successful completion.
+GitHub Actions performs a workspace build, IPC envelope and lifecycle unit tests, a normal mock-worker smoke run, a fault-injected restart recovery run, and a Syzygy process-adapter run against a stub executable. The normal smoke run checks handshake, start, health, stop, shutdown acknowledgement, and child exit status 0. The restart test requires the first worker to fail during `session.start`, then checks retry logging, generation 2, and successful completion.
 
-CI now covers incompatible protocol versions, missing request IDs, stale worker generations, incorrect response types, request correlation, worker-originated session start/stop event ordering, malformed/oversized/truncated/disconnected IPC input, crash reaping, graceful exit, and SIGTERM-to-SIGKILL escalation. Duplicate request replay and session idempotency are covered by worker unit tests. Supervisor-loss cleanup, peer authentication, durable session recovery, integration with a real Syzygy worker, and Fedora-host verification remain open.
+CI now covers incompatible protocol versions, missing request IDs, stale worker generations, incorrect response types, request correlation, worker-originated session start/stop event ordering, malformed/oversized/truncated/disconnected IPC input, crash reaping, graceful exit, and SIGTERM-to-SIGKILL escalation. Duplicate request replay and session idempotency are covered by worker unit tests. Supervisor-loss cleanup, peer authentication, durable session recovery, integration against a built Syzygy binary, headless descendant cleanup, real Moonlight session behavior, and Fedora-host verification remain open.
