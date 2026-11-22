@@ -92,16 +92,16 @@ pub fn parse_moonlight_sdp(body: &[u8]) -> Result<MoonlightStreamProfile, SdpErr
         }
     }
 
-    let width = number(&attributes, WIDTH, true)?;
-    let height = number(&attributes, HEIGHT, true)?;
-    let frames_per_second = number(&attributes, FPS, true)?;
-    let packet_size = number(&attributes, PACKET_SIZE, true)?;
-    let bitrate_kbps = number(&attributes, BITRATE, true)?;
-    let codec_number = number(&attributes, CODEC, true)?;
-    let minimum_fec_packets = number(&attributes, MIN_FEC, false)?.unwrap_or(0);
-    let moonlight_feature_flags = number(&attributes, ML_FEATURES, false)?.unwrap_or(0);
-    let nvidia_feature_flags = number(&attributes, NV_FEATURES, false)?.unwrap_or(135);
-    let encryption_flags = number(&attributes, ENCRYPTION, false)?.unwrap_or(0);
+    let width = required_number(&attributes, WIDTH)?;
+    let height = required_number(&attributes, HEIGHT)?;
+    let frames_per_second = required_number(&attributes, FPS)?;
+    let packet_size = required_number(&attributes, PACKET_SIZE)?;
+    let bitrate_kbps = required_number(&attributes, BITRATE)?;
+    let codec_number = required_number(&attributes, CODEC)?;
+    let minimum_fec_packets = number(&attributes, MIN_FEC)?.unwrap_or(0);
+    let moonlight_feature_flags = number(&attributes, ML_FEATURES)?.unwrap_or(0);
+    let nvidia_feature_flags = number(&attributes, NV_FEATURES)?.unwrap_or(135);
+    let encryption_flags = number(&attributes, ENCRYPTION)?.unwrap_or(0);
 
     if width == 0 || width > 16_384 || width % 2 != 0 { return Err(SdpError::ValueOutOfRange(WIDTH)); }
     if height == 0 || height > 16_384 || height % 2 != 0 { return Err(SdpError::ValueOutOfRange(HEIGHT)); }
@@ -134,9 +134,13 @@ fn recognized_name(name: &str) -> &'static str {
     }
 }
 
-fn number(attributes: &HashMap<&str, &str>, name: &'static str, required: bool) -> Result<Option<u32>, SdpError> {
+fn required_number(attributes: &HashMap<&str, &str>, name: &'static str) -> Result<u32, SdpError> {
+    number(attributes, name)?.ok_or(SdpError::MissingAttribute(name))
+}
+
+fn number(attributes: &HashMap<&str, &str>, name: &'static str) -> Result<Option<u32>, SdpError> {
     let Some(value) = attributes.get(name) else {
-        return if required { Err(SdpError::MissingAttribute(name)) } else { Ok(None) };
+        return Ok(None);
     };
     value.parse::<u32>().map(Some).map_err(|_| SdpError::InvalidNumber(name))
 }
