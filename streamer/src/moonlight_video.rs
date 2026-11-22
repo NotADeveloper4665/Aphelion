@@ -7,11 +7,12 @@
 //! optionally encrypted. Differential vectors and a real-client pass are still required
 //! before claiming Moonlight interoperability.
 
-use std::{io, net::{SocketAddr, UdpSocket}};
+use std::{io, net::{IpAddr, SocketAddr, UdpSocket}};
 
 use crate::crypto::{CryptoError, MoonlightVideoCipher, MOONLIGHT_VIDEO_PREFIX_BYTES};
 use crate::fec::{FecBlock, FecError};
 use crate::moonlight_sdp::{MoonlightStreamProfile, VideoCodec};
+use crate::moonlight_session::MediaPortPair;
 
 const RTP_HEADER_BYTES: usize = 12;
 const MOONLIGHT_PACKET_HEADER_BYTES: usize = 32;
@@ -108,6 +109,34 @@ pub struct MoonlightSendStats {
     pub bytes: usize,
 }
 
+/// Holds an even RTP port and its consecutive RTCP port so RTSP can advertise ports
+/// that are already reserved by the OS.
+pub struct ReservedUdpPortPair {
+    ports: MediaPortPair,
+    rtp: UdpSocket,
+    rtcp: UdpSocket,
+}
+
+impl ReservedUdpPortPair {
+    pub fn bind(local_ip: IpAddr) -> io::Result<Self> {
+        let mut last_bind_error = None;
+        for _ in 0..128 {
+            let rtp = UdpSocket::bind(SocketAddr::new(local_ip, 0))?;
+            let rtp_port = rtp.local_addr()?.port();
+            let Some(ports) = rtp_port.checked_add(1).and_then(|rtcp| MediaPortPair::new(rtp_port, rtcp)) else { continue; };
+            match UdpSocket::bind(SocketAddr::new(local_ip, ports.rtcp())) {
+                Ok(rtcp) => return Ok(Self { ports, rtp, rtcp }),
+                Err(error) => last_bind_error = Some(error),
+            }
+        }
+        Err(last_bind_error.unwrap_or_else(|| io::Error::new(io::ErrorKind::AddrNotAvailable, "could not reserve an even RTP/RTCP port pair")))
+    }
+
+    pub fn ports(&self) -> MediaPortPair { self.ports }
+
+    fn into_sockets(self) -> (MediaPortPair, UdpSocket, UdpSocket) { (self.ports, self.rtp, self.rtcp) }
+}
+
 #[derive(Debug)]
 pub enum MoonlightSendError {
     Packetize(MoonlightPacketError),
@@ -131,6 +160,7 @@ impl std::error::Error for MoonlightSendError {}
 /// remains the caller's responsibility; no media is sent over control IPC.
 pub struct MoonlightUdpSender {
     socket: UdpSocket,
+    _rtcp_socket: Option<UdpSocket>,
     destination: SocketAddr,
     packetizer: MoonlightVideoPacketizer,
     cipher: Option<MoonlightVideoCipher>,
@@ -143,8 +173,23 @@ impl MoonlightUdpSender {
         config: MoonlightVideoConfig,
         cipher: Option<MoonlightVideoCipher>,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        Ok(Self { socket: UdpSocket::bind(local)?, destination, packetizer: MoonlightVideoPacketizer::new(config)?, cipher })
+        Ok(Self { socket: UdpSocket::bind(local)?, _rtcp_socket: None, destination, packetizer: MoonlightVideoPacketizer::new(config)?, cipher })
     }
+
+    /// Build a sender using the exact reserved RTP port that the RTSP layer can
+    /// advertise. The paired RTCP socket remains owned for the sender's lifetime.
+    pub fn bind_reserved(
+        pair: ReservedUdpPortPair,
+        destination: SocketAddr,
+        config: MoonlightVideoConfig,
+        cipher: Option<MoonlightVideoCipher>,
+    ) -> Result<(Self, MediaPortPair), Box<dyn std::error::Error + Send + Sync>> {
+        let (ports, socket, rtcp_socket) = pair.into_sockets();
+        let sender = Self { socket, _rtcp_socket: Some(rtcp_socket), destination, packetizer: MoonlightVideoPacketizer::new(config)?, cipher };
+        Ok((sender, ports))
+    }
+
+    pub fn local_addr(&self) -> io::Result<SocketAddr> { self.socket.local_addr() }
 
     pub fn send_access_unit(
         &mut self,
@@ -442,5 +487,24 @@ mod tests {
         assert_eq!(bytes, 64);
         assert_eq!(&packet[..2], &[0x90, 96]);
         assert_eq!(&packet[20..24], &[1, 0, 0, 0]);
+    }
+
+    #[test]
+    fn reserves_and_uses_the_exact_even_rtp_and_consecutive_rtcp_ports() {
+        let receiver = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        receiver.set_read_timeout(Some(std::time::Duration::from_secs(1))).unwrap();
+        let pair = ReservedUdpPortPair::bind(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)).unwrap();
+        let expected_ports = pair.ports();
+        assert_eq!(expected_ports.rtp() % 2, 0);
+        assert_eq!(expected_ports.rtcp(), expected_ports.rtp() + 1);
+        let (mut sender, advertised_ports) = MoonlightUdpSender::bind_reserved(
+            pair, receiver.local_addr().unwrap(), MoonlightVideoConfig::default(), None,
+        ).unwrap();
+        assert_eq!(advertised_ports, expected_ports);
+        assert_eq!(sender.local_addr().unwrap().port(), advertised_ports.rtp());
+        assert!(UdpSocket::bind(SocketAddr::new(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), advertised_ports.rtcp())).is_err());
+        sender.send_access_unit(3, 90, true, 0, &[&[0x65, 1]]).unwrap();
+        let mut packet = [0; 1400];
+        assert_eq!(receiver.recv_from(&mut packet).unwrap().0, 1200);
     }
 }
