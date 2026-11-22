@@ -49,16 +49,10 @@ async fn run() -> Result<()> {
     let mut child: Option<ManagedChild> = None;
     let mut sessions = SessionIdMapper::new(worker_id.clone(), generation);
     let (session_event_tx, mut session_event_rx) = mpsc::channel(64);
-    let mut last_exit: Option<Value> = None;
 
     loop {
         if let Some(current) = child.as_mut() {
             if let Some(status) = current.child.try_wait()? {
-                last_exit = Some(json!({
-                    "success": status.success(),
-                    "code": status.code(),
-                    "signal": status.signal(),
-                }));
                 child = None;
                 return Err(unexpected_syzygy_exit(status).into());
             }
@@ -106,7 +100,6 @@ async fn run() -> Result<()> {
                     }
                     let process_id = spawned.child.id();
                     child = Some(spawned);
-                    last_exit = None;
                     json!({
                         "ok": true,
                         "state": "process_started",
@@ -154,11 +147,6 @@ async fn run() -> Result<()> {
                     match process.child.try_wait()? {
                         None => true,
                         Some(status) => {
-                            last_exit = Some(json!({
-                                "success": status.success(),
-                                "code": status.code(),
-                                "signal": status.signal(),
-                            }));
                             child = None;
                             return Err(unexpected_syzygy_exit(status).into());
                         }
@@ -175,7 +163,7 @@ async fn run() -> Result<()> {
                         "state": if running { "process_running" } else { "stopped" },
                         "process_running": running,
                         "process_id": child.as_ref().and_then(ManagedChild::id),
-                        "last_exit": last_exit,
+                        "last_exit": null,
                         "stream_ready": false,
                         "client_session_count": sessions.active_count(),
                         "client_session_count_source": "SYZYGY_SESSION_START_STOP logs",
