@@ -7,6 +7,7 @@
 
 use std::collections::VecDeque;
 
+use crate::moonlight_sdp::{parse_moonlight_sdp, MoonlightStreamProfile};
 use crate::rtsp::RtspRequest;
 
 const RESPONSE_CACHE: usize = 32;
@@ -98,14 +99,18 @@ pub struct MoonlightRtspSession {
     tracks: u8,
     cache: VecDeque<CachedResponse>,
     highest_cseq: Option<u32>,
+    stream_profile: Option<MoonlightStreamProfile>,
 }
 
 impl MoonlightRtspSession {
     pub fn new(session_id: impl Into<String>) -> Self {
-        Self { session_id: session_id.into(), state: SessionState::AwaitingAnnounce, tracks: 0, cache: VecDeque::new(), highest_cseq: None }
+        Self { session_id: session_id.into(), state: SessionState::AwaitingAnnounce, tracks: 0, cache: VecDeque::new(), highest_cseq: None, stream_profile: None }
     }
 
     pub fn state(&self) -> SessionState { self.state }
+
+    /// The validated stream parameters from ANNOUNCE, once accepted.
+    pub fn stream_profile(&self) -> Option<&MoonlightStreamProfile> { self.stream_profile.as_ref() }
 
     pub fn handle(&mut self, request: RtspRequest) -> SessionResult {
         if let Some(cached) = self.cache.iter().find(|cached| cached.request.cseq == request.cseq) {
@@ -142,6 +147,11 @@ impl MoonlightRtspSession {
             if request.header("content-type").is_none_or(|value| !value.eq_ignore_ascii_case("application/sdp")) {
                 return result(request.cseq, 415, "Unsupported Media Type", SessionEvent::None, false);
             }
+            let profile = match parse_moonlight_sdp(&request.body) {
+                Ok(profile) => profile,
+                Err(_) => return result(request.cseq, 400, "Invalid SDP", SessionEvent::None, false),
+            };
+            self.stream_profile = Some(profile);
             self.state = SessionState::Configuring;
             return result(request.cseq, 200, "OK", SessionEvent::Announced, false);
         }
@@ -227,11 +237,14 @@ mod tests {
         RtspDecoder::default().push(&bytes).unwrap().remove(0)
     }
 
+    const VALID_SDP: &[u8] = b"v=0\r\na=x-nv-video[0].clientViewportWd:1920\r\na=x-nv-video[0].clientViewportHt:1080\r\na=x-nv-video[0].maxFPS:60\r\na=x-nv-video[0].packetSize:1200\r\na=x-nv-vqos[0].bw.maximumBitrateKbps:30000\r\na=x-nv-vqos[0].bitStreamFormat:0\r\n";
+
     #[test]
     fn runs_announce_setup_play_and_teardown_in_order() {
         let mut session = MoonlightRtspSession::new("test-session");
-        let announce = session.handle(parse("ANNOUNCE", "rtsp://host", 1, "Content-Type: application/sdp\r\n", b"v=0\r\n"));
+        let announce = session.handle(parse("ANNOUNCE", "rtsp://host", 1, "Content-Type: application/sdp\r\n", VALID_SDP));
         assert_eq!(announce.response.status, 200);
+        assert_eq!(session.stream_profile().unwrap().width, 1920);
         let setup = session.handle(parse("SETUP", "rtsp://host/streamid=video", 2, "Transport: RTP/AVP/UDP;unicast;client_port=47998-47999\r\n", b""));
         assert_eq!(setup.response.status, 200);
         assert_eq!(setup.event, SessionEvent::TrackConfigured(MediaTrack::Video));
@@ -259,10 +272,19 @@ mod tests {
     #[test]
     fn rejects_play_without_video_and_setup_with_wrong_session() {
         let mut session = MoonlightRtspSession::new("expected");
-        session.handle(parse("ANNOUNCE", "rtsp://host", 1, "Content-Type: application/sdp\r\n", b"v=0"));
+        session.handle(parse("ANNOUNCE", "rtsp://host", 1, "Content-Type: application/sdp\r\n", VALID_SDP));
         let setup = session.handle(parse("SETUP", "rtsp://host/streamid=audio", 2, "Transport: RTP/AVP/UDP;unicast;client_port=1-2\r\nSession: other\r\n", b""));
         assert_eq!(setup.response.status, 454);
         let play = session.handle(parse("PLAY", "rtsp://host", 3, "Session: expected\r\n", b""));
         assert_eq!(play.response.status, 455);
+    }
+
+    #[test]
+    fn rejects_invalid_sdp_without_advancing_session_state() {
+        let mut session = MoonlightRtspSession::new("sdp-test");
+        let response = session.handle(parse("ANNOUNCE", "rtsp://host", 1, "Content-Type: application/sdp\r\n", b"v=0\r\n"));
+        assert_eq!(response.response.status, 400);
+        assert_eq!(session.state(), SessionState::AwaitingAnnounce);
+        assert!(session.stream_profile().is_none());
     }
 }

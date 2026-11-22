@@ -18,6 +18,7 @@ pub mod moonlight_session;
 pub mod encoder;
 pub mod moonlight_video;
 pub mod pipeline;
+pub mod moonlight_sdp;
 
 const RTP_HEADER_LEN: usize = 12;
 const H264_FU_A_TYPE: u8 = 28;
