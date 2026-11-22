@@ -1,8 +1,8 @@
 use aphelion_supervisor::{Message, PROTOCOL_MAJOR, PROTOCOL_MINOR, MAX_MESSAGE_BYTES};
-use serde_json::{json, Value};
-use std::{env, path::PathBuf, process::Stdio, time::Duration};
+use serde_json::json;
+use std::{env, process::Stdio, time::Duration};
 use tokio::{
-    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+    io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     net::{UnixListener, UnixStream},
     process::{Child, Command},
     time::timeout,
@@ -114,9 +114,11 @@ async fn run_demo(
 
 async fn read_message<R: tokio::io::AsyncBufRead + Unpin>(reader: &mut R) -> Result<Message> {
     let mut line = Vec::new();
-    let count = timeout(Duration::from_secs(5), reader.read_until(b'\n', &mut line)).await??;
+    let mut limited = reader.take((MAX_MESSAGE_BYTES + 1) as u64);
+    let count = timeout(Duration::from_secs(5), limited.read_until(b'\\n', &mut line)).await??;
     if count == 0 { return Err("worker disconnected before replying".into()); }
-    if line.len() > MAX_MESSAGE_BYTES { return Err("IPC message exceeds size limit".into()); }
+    if count > MAX_MESSAGE_BYTES { return Err("IPC message exceeds size limit".into()); }
+    if !line.ends_with(b"\\n") { return Err("truncated IPC message (missing newline delimiter)".into()); }
     Ok(serde_json::from_slice(&line)?)
 }
 
