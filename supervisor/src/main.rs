@@ -219,3 +219,7 @@ mod tests {
         assert!(child.id().is_none(), "child must be reaped after SIGKILL");
     }
 }
+
+#[cfg(test)]
+#[path = "main_tests.rs"]
+mod main_tests;
