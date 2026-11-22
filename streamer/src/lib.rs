@@ -10,6 +10,10 @@ use std::{
     net::{SocketAddr, UdpSocket},
 };
 
+pub mod rtsp;
+pub mod crypto;
+pub mod fec;
+
 const RTP_HEADER_LEN: usize = 12;
 const H264_FU_A_TYPE: u8 = 28;
 const MAX_UDP_DATAGRAM_SIZE: usize = 65_507;

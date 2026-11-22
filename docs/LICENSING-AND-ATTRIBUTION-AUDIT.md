@@ -36,6 +36,13 @@
 
 This is not a complete dependency-license audit. The individual license texts and exact pinned revisions of all submodules and transitive dependencies have not been reviewed. Packaging assets, generated files, fonts, icons, documentation images, and platform-specific bundled components may have additional terms. The current submodule branch names in .gitmodules are not immutable revision pins; inspect the actual gitlink commits in the source tree before recording dependency versions.
 
+## Rust streamer dependencies added
+
+- `aes-gcm` 0.11.x (RustCrypto): upstream declares Apache-2.0 OR MIT. The crate's security notes describe one NCC Group audit; Aphelion still needs its own usage review and key-lifecycle tests.
+- `reed-solomon-erasure` 6.x: upstream declares MIT. This is used as a generic FEC primitive; Aphelion has not copied Syzygy's implementation.
+
+Cargo currently uses exact direct-dependency versions for these two crates. Transitive dependency inventory and a checked-in lockfile remain follow-up work before distribution.
+
 ## Required follow-up before redistribution
 
 1. Record the exact Syzygy source commit and all submodule gitlink commits used as the inheritance baseline.
