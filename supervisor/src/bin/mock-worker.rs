@@ -100,10 +100,10 @@ async fn connect_with_retry(path: PathBuf) -> Result<UnixStream> {
 async fn read_message<R: tokio::io::AsyncBufRead + Unpin>(reader: &mut R) -> Result<Message> {
     let mut line = Vec::new();
     let mut limited = reader.take((MAX_MESSAGE_BYTES + 1) as u64);
-    let count = limited.read_until(b'\\n', &mut line).await?;
+    let count = limited.read_until(b'\n', &mut line).await?;
     if count == 0 { return Err("supervisor disconnected".into()); }
     if count > MAX_MESSAGE_BYTES { return Err("IPC message exceeds size limit".into()); }
-    if !line.ends_with(b"\\n") { return Err("truncated IPC message (missing newline delimiter)".into()); }
+    if !line.ends_with(b"\n") { return Err("truncated IPC message (missing newline delimiter)".into()); }
     Ok(serde_json::from_slice(&line)?)
 }
 
