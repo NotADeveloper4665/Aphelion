@@ -7,7 +7,7 @@ use std::{
     os::unix::process::ExitStatusExt,
     path::PathBuf,
     process::Stdio,
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use nix::{sys::signal::{killpg, Signal}, unistd::Pid};
 use tokio::{
@@ -17,7 +17,6 @@ use tokio::{
     sync::mpsc,
     task::JoinHandle,
     time::{sleep, timeout, Instant},
-    time::{SystemTime, UNIX_EPOCH},
 };
 use uuid::Uuid;
 
@@ -88,7 +87,6 @@ async fn run() -> Result<()> {
                         "already_running": true,
                         "stream_ready": false,
                         "process_id": child.as_ref().and_then(ManagedChild::id),
-                        "host_uptime_ms": child.as_ref().map(ManagedChild::uptime_ms),
                     })
                 } else {
                     // Clear any Syzygy-managed background instance first. The
@@ -168,6 +166,7 @@ async fn run() -> Result<()> {
                         "state": if running { "process_running" } else { "stopped" },
                         "process_running": running,
                         "process_id": child.as_ref().and_then(ManagedChild::id),
+                        "host_uptime_ms": child.as_ref().map(ManagedChild::uptime_ms),
                         "last_exit": null,
                         "stream_ready": false,
                         "client_session_count": sessions.active_count(),
@@ -221,6 +220,26 @@ async fn run() -> Result<()> {
     }
 
     Ok(())
+}
+
+fn unix_timestamp_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .min(u64::MAX as u128) as u64
+}
+
+/// "unavailable" describes telemetry availability, not whether the media stage works.
+fn unavailable_subsystem_health() -> Value {
+    let reason = "structured_health_not_exposed_by_syzygy_adapter";
+    json!({
+        "capture": {"state": "unavailable", "reason": reason},
+        "encoder": {"state": "unavailable", "reason": reason},
+        "audio": {"state": "unavailable", "reason": reason},
+        "input": {"state": "unavailable", "reason": reason},
+        "network": {"state": "unavailable", "reason": reason}
+    })
 }
 
 struct ManagedChild {

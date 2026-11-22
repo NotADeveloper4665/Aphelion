@@ -266,14 +266,14 @@ jobs:
           cat > "$stub" <<'EOF'
           #!/bin/sh
           if [ "${1:-}" = "-stop" ]; then
-            printf '%s\\n' called >> "$APHELION_TEST_STOP_LOG"
+            printf '%s\n' called >> "$APHELION_TEST_STOP_LOG"
             exit 0
           fi
-          printf '%s\\n' "$$" > "$APHELION_TEST_CHILD_PID_FILE"
-          printf '%s\\n' "SYZYGY_SESSION_START repeat-token hevc"
+          printf '%s\n' "$$" > "$APHELION_TEST_CHILD_PID_FILE"
+          printf '%s\n' "SYZYGY_SESSION_START repeat-token hevc"
           ( sleep 1; touch "$APHELION_TEST_ORPHAN_MARKER" ) &
           helper_pid=$!
-          trap 'touch "$APHELION_TEST_STOP_MARKER"; kill "$helper_pid" 2>/dev/null || true; wait "$helper_pid" 2>/dev/null || true; printf "%s\\n" "SYZYGY_SESSION_STOP repeat-token"; exit 0' TERM
+          trap 'touch "$APHELION_TEST_STOP_MARKER"; kill "$helper_pid" 2>/dev/null || true; wait "$helper_pid" 2>/dev/null || true; printf "%s\n" "SYZYGY_SESSION_STOP repeat-token"; exit 0' TERM
           while :; do sleep 60 & wait $!; done
           EOF
           chmod +x "$stub"
@@ -283,12 +283,12 @@ jobs:
             orphan_marker="$RUNNER_TEMP/aphelion-repeat-orphan-$cycle"
             stop_log="$RUNNER_TEMP/aphelion-repeat-stop-calls-$cycle"
             child_pid_file="$RUNNER_TEMP/aphelion-repeat-child-pid-$cycle"
-            APHELION_WORKER_KIND=syzygy \\
-              APHELION_SYZYGY_EXECUTABLE="$stub" \\
-              APHELION_TEST_STOP_MARKER="$stop_marker" \\
-              APHELION_TEST_ORPHAN_MARKER="$orphan_marker" \\
-              APHELION_TEST_STOP_LOG="$stop_log" \\
-              APHELION_TEST_CHILD_PID_FILE="$child_pid_file" \\
+            APHELION_WORKER_KIND=syzygy \
+              APHELION_SYZYGY_EXECUTABLE="$stub" \
+              APHELION_TEST_STOP_MARKER="$stop_marker" \
+              APHELION_TEST_ORPHAN_MARKER="$orphan_marker" \
+              APHELION_TEST_STOP_LOG="$stop_log" \
+              APHELION_TEST_CHILD_PID_FILE="$child_pid_file" \
               setsid ./target/debug/supervisor --serve >"$output_file" 2>&1 &
             supervisor_pid=$!
             cleanup() {
