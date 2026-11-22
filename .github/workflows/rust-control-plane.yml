@@ -44,6 +44,7 @@ jobs:
           arg_log="$RUNNER_TEMP/syzygy-args"
           cat > "$stub" <<'EOF'
           #!/bin/sh
+          if [ "${1:-}" = "-stop" ]; then exit 0; fi
           printf '%s\n' "$SYZYGY_MANAGED_CHILD" "$@" > "$APHELION_TEST_ARG_LOG"
           printf '%s\n' "SYZYGY_SESSION_START 0xabc hevc"
           trap 'printf "%s\n" "SYZYGY_SESSION_STOP 0xabc"; exit 0' TERM
@@ -74,6 +75,7 @@ jobs:
           marker="$RUNNER_TEMP/syzygy-crash-once"
           cat > "$stub" <<'EOF'
           #!/bin/sh
+          if [ "${1:-}" = "-stop" ]; then exit 0; fi
           if [ ! -e "$APHELION_TEST_CRASH_MARKER" ]; then
             touch "$APHELION_TEST_CRASH_MARKER"
             exit 42
