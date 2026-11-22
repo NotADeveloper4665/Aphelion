@@ -12,12 +12,14 @@ const PIN_BYTES: usize = 4;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PairingKeyError {
     InvalidPin,
+    InvalidSalt,
 }
 
 impl std::fmt::Display for PairingKeyError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::InvalidPin => formatter.write_str("Moonlight pairing PIN must contain exactly four ASCII digits"),
+            Self::InvalidSalt => formatter.write_str("Moonlight pairing salt must contain exactly 32 hexadecimal characters"),
         }
     }
 }
@@ -30,6 +32,27 @@ impl std::error::Error for PairingKeyError {}
 /// parse that representation at the HTTP boundary and pass the decoded bytes here.
 /// The key is intentionally not `Clone` or `Debug` and is wiped when dropped.
 pub struct MoonlightPairingKey([u8; 16]);
+
+/// Decode the 16-byte salt's 32-character hexadecimal RTSP/HTTP representation.
+pub fn parse_pairing_salt_hex(input: &str) -> Result<[u8; 16], PairingKeyError> {
+    if input.len() != 32 {
+        return Err(PairingKeyError::InvalidSalt);
+    }
+    let nibble = |byte: u8| match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    };
+    let bytes = input.as_bytes();
+    let mut salt = [0_u8; 16];
+    for (index, output) in salt.iter_mut().enumerate() {
+        let high = nibble(bytes[index * 2]).ok_or(PairingKeyError::InvalidSalt)?;
+        let low = nibble(bytes[index * 2 + 1]).ok_or(PairingKeyError::InvalidSalt)?;
+        *output = (high << 4) | low;
+    }
+    Ok(salt)
+}
 
 impl MoonlightPairingKey {
     pub fn from_pin(salt: &[u8; 16], pin: &str) -> Result<Self, PairingKeyError> {
@@ -82,6 +105,17 @@ mod tests {
         ]);
         for pin in ["", "123", "12345", "12a4", "１２３４"] {
             assert!(matches!(MoonlightPairingKey::from_pin(&salt, pin), Err(PairingKeyError::InvalidPin)));
+        }
+    }
+
+    #[test]
+    fn parses_pairing_salt_hex_with_case_and_rejects_bad_width_or_digits() {
+        assert_eq!(parse_pairing_salt_hex("00112233445566778899aAbBcCdDeEfF").unwrap(), [
+            0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
+            0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff,
+        ]);
+        for salt in ["", "0011", "00112233445566778899aabbccddeef", "00112233445566778899aabbccddEEgG", "0é0000000000000000000000000000"] {
+            assert!(matches!(parse_pairing_salt_hex(salt), Err(PairingKeyError::InvalidSalt)));
         }
     }
 }
