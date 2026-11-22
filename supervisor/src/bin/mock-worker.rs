@@ -22,7 +22,7 @@ async fn main() -> Result<()> {
     let mut reader = BufReader::new(read);
 
     let hello_id = Uuid::new_v4().to_string();
-    send(&mut write, &Message::new("event", "worker.hello", &worker_id, generation,
+    send(&mut write, &Message::new("event", "worker.hello", worker_id, generation,
         Some(hello_id.clone()), None,
         json!({"build": "mock-worker/0.1.0", "capabilities": ["session.start", "session.stop", "worker.health"]}))).await?;
     let ack = read_message(&mut reader).await?;
@@ -71,7 +71,7 @@ async fn main() -> Result<()> {
             }
             other => (json!({"error": "UNSUPPORTED_MESSAGE", "message": other}), false),
         };
-        let response = Message::new("response", request.message_type, &worker_id, generation,
+        let response = Message::new("response", request.message_type, worker_id, generation,
             request.request_id, session_id, body);
         send(&mut write, &response).await?;
         if should_exit {
