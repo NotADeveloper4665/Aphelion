@@ -114,8 +114,10 @@ mod tests {
             0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
             0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff,
         ]);
-        for salt in ["", "0011", "00112233445566778899aabbccddeef", "00112233445566778899aabbccddEEgG", "0é0000000000000000000000000000"] {
+        for salt in ["", "0011", "00112233445566778899aabbccddeef", "00112233445566778899aabbccddEEgG"] {
             assert!(matches!(parse_pairing_salt_hex(salt), Err(PairingKeyError::InvalidSalt)));
         }
+        let non_ascii_at_odd_byte = format!("0é{}", "0".repeat(29));
+        assert!(matches!(parse_pairing_salt_hex(&non_ascii_at_odd_byte), Err(PairingKeyError::InvalidSalt)));
     }
 }
