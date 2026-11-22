@@ -80,9 +80,18 @@ jobs:
           exec sleep 60
           EOF
           chmod +x "$stub"
-          named_process="$RUNNER_TEMP/syzygy"
-          cp "$(command -v sleep)" "$named_process"
-          "$named_process" 60 &
+          process_source="$RUNNER_TEMP/syzygy-process.c"
+          named_process="$RUNNER_TEMP/syzygy-process"
+          cat > "$process_source" <<'EOF'
+          #include <sys/prctl.h>
+          #include <unistd.h>
+          int main(void) {
+            if (prctl(PR_SET_NAME, "syzygy", 0, 0, 0) != 0) return 1;
+            for (;;) pause();
+          }
+          EOF
+          cc "$process_source" -o "$named_process"
+          "$named_process" &
           existing_pid=$!
           cleanup() {
             kill -TERM "$existing_pid" 2>/dev/null || true
