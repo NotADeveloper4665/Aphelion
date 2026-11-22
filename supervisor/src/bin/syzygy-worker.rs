@@ -1,5 +1,5 @@
 use aphelion_supervisor::{
-    protocol_version_supported, Message, SessionIntent, PROTOCOL_MAJOR, PROTOCOL_MINOR,
+    protocol_version_supported, Message, SessionIntent,
     MAX_MESSAGE_BYTES,
 };
 use serde_json::{json, Value};
@@ -113,7 +113,7 @@ async fn run() -> Result<()> {
                 }
                 managed_session = None;
                 send_response(
-                    &writer,
+                    &mut writer,
                     &request,
                     &worker_id,
                     generation,
@@ -145,7 +145,7 @@ async fn run() -> Result<()> {
                     false
                 };
                 send_response(
-                    &writer,
+                    &mut writer,
                     &request,
                     &worker_id,
                     generation,
@@ -167,7 +167,7 @@ async fn run() -> Result<()> {
                     stop_process(&mut process).await?;
                 }
                 send_response(
-                    &writer,
+                    &mut writer,
                     &request,
                     &worker_id,
                     generation,
@@ -178,7 +178,7 @@ async fn run() -> Result<()> {
             }
             _ => {
                 send_response(
-                    &writer,
+                    &mut writer,
                     &request,
                     &worker_id,
                     generation,
