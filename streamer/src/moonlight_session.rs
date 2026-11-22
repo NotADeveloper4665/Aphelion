@@ -96,6 +96,7 @@ pub enum SessionEvent {
     TrackConfigured(MediaTrack),
     PlaybackStarted,
     Teardown,
+    ControlDisconnected,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

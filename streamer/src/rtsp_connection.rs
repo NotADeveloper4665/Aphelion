@@ -50,11 +50,12 @@ pub fn serve_rtsp_connection(
         let read = match stream.read(&mut input) {
             Ok(0) => {
                 let buffered = decoder.buffered_bytes();
-                return if buffered == 0 {
-                    Ok(events)
-                } else {
-                    Err(RtspConnectionError::TruncatedMessage(buffered))
-                };
+                if buffered != 0 { return Err(RtspConnectionError::TruncatedMessage(buffered)); }
+                if session.state() != SessionState::AwaitingAnnounce && session.state() != SessionState::Closed {
+                    on_event(&SessionEvent::ControlDisconnected);
+                    events.push(SessionEvent::ControlDisconnected);
+                }
+                return Ok(events);
             }
             Ok(read) => read,
             Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
@@ -169,5 +170,33 @@ mod tests {
         client.write_all(b"OPTIONS * RTSP/1.0\r\nCSeq: 1\r\n").unwrap();
         drop(client);
         assert!(matches!(server.join().unwrap(), Err(RtspConnectionError::TruncatedMessage(_))));
+    }
+
+    #[test]
+    fn reports_clean_control_disconnect_after_session_setup() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+            let mut session = MoonlightRtspSession::new("session-id");
+            let mut events = Vec::new();
+            let result = serve_rtsp_connection(&mut stream, &mut session, |event| events.push(event.clone()));
+            (result.unwrap(), events, session.state())
+        });
+
+        let mut client = TcpStream::connect(address).unwrap();
+        client.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        let sdp = b"v=0\r\ns=Aphelion\r\na=x-nv-video[0].clientViewportWd:1280\r\na=x-nv-video[0].clientViewportHt:720\r\na=x-nv-video[0].maxFPS:60\r\na=x-nv-video[0].packetSize:1200\r\na=x-nv-vqos[0].bw.maximumBitrateKbps:10000\r\na=x-nv-vqos[0].bitStreamFormat:0\r\n";
+        let announce = format!("ANNOUNCE rtsp://127.0.0.1/session RTSP/1.0\r\nCSeq: 1\r\nContent-Type: application/sdp\r\nContent-Length: {}\r\n\r\n", sdp.len());
+        client.write_all(announce.as_bytes()).unwrap();
+        client.write_all(sdp).unwrap();
+        assert!(read_response(&mut client).contains("CSeq: 1"));
+        drop(client);
+
+        let (events, callbacks, state) = server.join().unwrap();
+        assert_eq!(events, vec![SessionEvent::Announced, SessionEvent::ControlDisconnected]);
+        assert_eq!(events, callbacks);
+        assert_eq!(state, SessionState::Configuring);
     }
 }
