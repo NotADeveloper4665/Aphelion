@@ -4,7 +4,7 @@ This bundle is an early, installable integration harness for the Rust supervisor
 
 ## Obtain the bundle
 
-After a successful push build on `prototype/rust-control-plane`, open the repository's **Actions** tab, select the latest **Rust control-plane prototype** run, and download the artifact named `aphelion-linux-x86_64-<commit>`. The artifact is a 30-day Actions artifact, not a release.
+After a successful push build on `prototype/rust-control-plane`, open the repository's **Actions** tab, select the latest **Rust control-plane prototype** run, and download the artifact named `aphelion-linux-x86_64-<commit>`. GitHub downloads the artifact as a ZIP; inside it is the `.tar.gz` runtime bundle shown below. The artifact is retained for 30 days and is not a release.
 
 The CI bundle is built on Ubuntu x86_64. Fedora and other Linux distributions have not yet been verified. The package includes `supervisor`, `syzygy-worker`, the `aphelion-syzygy` launcher, and this document.
 
@@ -13,6 +13,7 @@ The CI bundle is built on Ubuntu x86_64. Fedora and other Linux distributions ha
 Extract the archive, point the launcher at the existing Syzygy executable, and start Aphelion:
 
 ```sh
+unzip aphelion-linux-x86_64-<commit>.zip
 tar -xzf aphelion-linux-x86_64.tar.gz
 cd aphelion-linux-x86_64
 APHELION_SYZYGY_EXECUTABLE=/absolute/path/to/syzygy ./bin/aphelion-syzygy
