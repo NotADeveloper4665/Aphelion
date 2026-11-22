@@ -27,7 +27,15 @@ pub struct Message {
     pub body: Value,
 }
 
-pub fn protocol_version_supported(version: &ProtocolVersion) -> bool {\n    version.major == PROTOCOL_MAJOR && version.minor <= PROTOCOL_MINOR\n}\n\npub fn message_identity_matches(message: &Message, worker_id: &str, generation: u64) -> bool {\n    message.worker_instance_id == worker_id && message.worker_generation == generation\n}\n\nimpl Message {
+pub fn protocol_version_supported(version: &ProtocolVersion) -> bool {
+    version.major == PROTOCOL_MAJOR && version.minor <= PROTOCOL_MINOR
+}
+
+pub fn message_identity_matches(message: &Message, worker_id: &str, generation: u64) -> bool {
+    message.worker_instance_id == worker_id && message.worker_generation == generation
+}
+
+impl Message {
     pub fn new(
         kind: impl Into<String>,
         message_type: impl Into<String>,
