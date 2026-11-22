@@ -108,14 +108,28 @@ impl FfmpegH264Encoder {
             .stderr(Stdio::null())
             .spawn()
             .map_err(EncoderError::Spawn)?;
-        let stdin = child.stdin.take().ok_or(EncoderError::MissingPipe)?;
-        let stdout = child.stdout.take().ok_or(EncoderError::MissingPipe)?;
+        let Some(stdin) = child.stdin.take() else {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(EncoderError::MissingPipe);
+        };
+        let Some(stdout) = child.stdout.take() else {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(EncoderError::MissingPipe);
+        };
         let timestamps = Arc::new(Mutex::new(VecDeque::new()));
         let reader_timestamps = Arc::clone(&timestamps);
         let (sender, output) = mpsc::sync_channel(2);
-        let reader = thread::Builder::new().name("aphelion-h264-output".into())
-            .spawn(move || read_access_units(stdout, sender, reader_timestamps))
-            .map_err(EncoderError::Spawn)?;
+        let reader = match thread::Builder::new().name("aphelion-h264-output".into())
+            .spawn(move || read_access_units(stdout, sender, reader_timestamps)) {
+            Ok(reader) => reader,
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(EncoderError::Spawn(error));
+            }
+        };
         Ok(Self { config, frame_bytes, child, stdin: Some(stdin), output, reader: Some(reader), timestamps })
     }
 
@@ -292,5 +306,23 @@ mod tests {
     fn validates_even_dimensions_and_bounded_rate_and_bitrate() {
         assert!(EncoderConfig { width: 1920, height: 1080, frames_per_second: 60, bitrate_kbps: 10_000 }.validate().is_ok());
         assert!(matches!(EncoderConfig { width: 1919, height: 1080, frames_per_second: 60, bitrate_kbps: 10_000 }.validate(), Err(EncoderError::InvalidConfig)));
+    }
+
+    #[test]
+    fn ffmpeg_process_encodes_frames_and_flushes_final_access_unit() {
+        let config = EncoderConfig { width: 16, height: 16, frames_per_second: 30, bitrate_kbps: 500 };
+        let mut encoder = FfmpegH264Encoder::spawn(config).expect("CI installs FFmpeg with libx264");
+        for fill in [0x10, 0x80] {
+            encoder.submit(&CapturedFrame {
+                width: config.width,
+                height: config.height,
+                captured_at: Instant::now(),
+                bgra: vec![fill; 16 * 16 * 4],
+            }).unwrap();
+        }
+        let units = encoder.finish().unwrap();
+        assert_eq!(units.len(), 2);
+        assert!(units.iter().all(|unit| unit.nals.iter().any(|nal| nal.first().is_some_and(|header| header & 0x1f == 9))));
+        assert!(units.iter().all(|unit| unit.captured_at.is_some()));
     }
 }
