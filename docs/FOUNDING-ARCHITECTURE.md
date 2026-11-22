@@ -45,7 +45,7 @@ The supervisor must not depend on Syzygy C++ structures or internal implementati
 
 The intended ownership boundary is one worker per capture source. This is a target to validate, not proof that all capture backends can share a source or that current Syzygy already supports it.
 
-Initially support one active encoding profile per capture source. Clients requesting a compatible profile may share the supported path only if the implementation proves safe. An incompatible request must be rejected clearly or assigned a separate encoder/worker only when resource checks and implementation support permit it. Do not build generalized multi-profile encoder sharing in Milestone 1.
+Do not assume one active encoding profile per capture source. The initial Syzygy source audit shows shared capture with separate per-session encoding contexts, but does not yet establish which combinations of resolutions, frame rates, codecs, and quality settings are supported concurrently. Milestone 1 must preserve verified existing Syzygy behavior. Trace and test profile combinations before narrowing support. Do not introduce generalized shared-encoder bitstream fan-out in Milestone 1; keep per-session encoder contexts where that is how the inherited path works. Profile compatibility must be explicit, and materially different profiles must not be silently treated as equivalent.
 
 ### Failure isolation
 
@@ -249,7 +249,7 @@ Later candidates include multi-profile encoding, independent gateways, additiona
 | session_id identifies a logical session, not a process | Invariant |
 | SOCK_SEQPACKET is the selected control transport | Provisional; prototype first |
 | IPC supports future SCM_RIGHTS if needed | Design requirement to validate |
-| One active encoding profile per capture source initially | Initial scope |
+| Preserve verified shared-capture and per-session encoder behavior; defer generalized shared-encoder fan-out | Audit-led initial direction |
 | Gamescope capture or custom PipeWire audio is the universal path | Not accepted; research required |
 | Thick Worker extraction follows documented architecture gates | Accepted |
 
