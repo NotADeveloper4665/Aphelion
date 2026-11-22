@@ -87,7 +87,12 @@ async fn run() -> Result<()> {
                     })
                 } else {
                     client_session_count.store(0, Ordering::Relaxed);
-                    let spawned = spawn_syzygy(Arc::clone(&client_session_count))?;
+                    let mut spawned = spawn_syzygy(Arc::clone(&client_session_count))?;
+                    // Allow immediate exec failures to surface before acknowledging process start.
+                    sleep(Duration::from_millis(100)).await;
+                    if let Some(status) = spawned.try_wait()? {
+                        return Err(format!("Syzygy exited during launch with {status}").into());
+                    }
                     let process_id = spawned.id();
                     child = Some(spawned);
                     managed_session = Some(session_id.to_owned());
@@ -241,16 +246,23 @@ async fn drain_output<R: AsyncRead + Unpin>(
     loop {
         match lines.next_line().await {
             Ok(Some(line)) => {
-                eprintln!("syzygy[{label}]: {line}");
-                if let Some(count) = client_session_count.as_ref() {
-                    if let Some((started, token)) = parse_session_lifecycle_log(&line) {
+                let observed = match (client_session_count.as_ref(), parse_session_lifecycle_log(&line)) {
+                    (Some(count), Some((started, token))) => {
                         if started {
                             active_tokens.insert(token.to_owned());
                         } else {
                             active_tokens.remove(token);
                         }
                         count.store(active_tokens.len(), Ordering::Relaxed);
+                        Some((started, active_tokens.len()))
                     }
+                    _ => None,
+                };
+                if let Some((started, active_count)) = observed {
+                    let action = if started { "started" } else { "stopped" };
+                    eprintln!("syzygy[{label}]: observed client session {action}; active count {active_count}");
+                } else {
+                    eprintln!("syzygy[{label}]: {line}");
                 }
             }
             Ok(None) => break,
