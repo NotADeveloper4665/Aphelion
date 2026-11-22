@@ -173,3 +173,46 @@ async fn reap_worker(child: &mut Child, graceful_wait: Duration) -> Result<std::
     child.kill().await?;
     Ok(child.wait().await?)
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::process::Stdio;
+
+    #[tokio::test]
+    async fn reaps_worker_that_exits_gracefully() {
+        let mut child = Command::new("sh")
+            .arg("-c")
+            .arg("exit 0")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn test child");
+
+        let status = reap_worker(&mut child, Duration::from_secs(2))
+            .await
+            .expect("reap graceful child");
+        assert!(status.success());
+        assert!(child.id().is_none(), "child must be reaped");
+    }
+
+    #[tokio::test]
+    async fn escalates_when_worker_ignores_sigterm() {
+        let mut child = Command::new("sh")
+            .arg("-c")
+            .arg("trap '' TERM; exec sleep 30")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn TERM-ignoring test child");
+
+        let status = reap_worker(&mut child, Duration::ZERO)
+            .await
+            .expect("reap forced child");
+        assert!(!status.success(), "SIGKILL termination must be non-zero");
+        assert!(child.id().is_none(), "child must be reaped after SIGKILL");
+    }
+}
