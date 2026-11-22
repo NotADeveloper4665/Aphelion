@@ -355,7 +355,7 @@ mod tests {
         let directory = env::temp_dir().join(format!("aphelion-runtime-test-{}", Uuid::new_v4()));
         std::fs::create_dir(&directory).expect("create runtime directory");
         let socket = directory.join("worker.sock");
-        std::fs::write(&socket, []).expect("create socket placeholder");
+        std::fs::write(&socket, b"").expect("create socket placeholder");
 
         drop(RuntimeDirectory { directory: directory.clone(), socket: socket.clone() });
 
