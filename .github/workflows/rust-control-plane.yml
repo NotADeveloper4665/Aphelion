@@ -64,3 +64,31 @@ jobs:
           grep -Fxq "1" "$arg_log"
           grep -Fxq -- "-s" "$arg_log"
           grep -Fxq -- "-foreground" "$arg_log"
+
+      - name: Recover from a Syzygy startup crash
+        shell: bash
+        run: |
+          set -euo pipefail
+          stub="$RUNNER_TEMP/syzygy-crash-stub"
+          marker="$RUNNER_TEMP/syzygy-crash-once"
+          cat > "$stub" <<'EOF'
+          #!/bin/sh
+          if [ ! -e "$APHELION_TEST_CRASH_MARKER" ]; then
+            touch "$APHELION_TEST_CRASH_MARKER"
+            exit 42
+          fi
+          exec sleep 60
+          EOF
+          chmod +x "$stub"
+          output="$(APHELION_WORKER_KIND=syzygy APHELION_SYZYGY_EXECUTABLE="$stub" APHELION_TEST_CRASH_MARKER="$marker" ./target/debug/supervisor 2>&1)" || {
+            printf '%s\n' "$output"
+            exit 1
+          }
+          printf '%s\n' "$output"
+          test -e "$marker"
+          grep -Fq "Syzygy exited during launch" <<<"$output"
+          grep -Fq "retry 1/3" <<<"$output"
+          grep -Fq "starting worker generation 2" <<<"$output"
+          grep -Fq '"state":"process_started"' <<<"$output"
+          grep -Fq '"process_running":true' <<<"$output"
+          grep -Fq "worker generation 2 exited with exit status: 0" <<<"$output"
