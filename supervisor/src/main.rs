@@ -12,6 +12,7 @@ use tokio::{
 use uuid::Uuid;
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
+const IPC_MESSAGE_TIMEOUT: Duration = Duration::from_secs(20);
 
 struct RuntimeDirectory {
     directory: std::path::PathBuf,
@@ -313,7 +314,7 @@ async fn read_correlated_response<R: tokio::io::AsyncBufRead + Unpin>(
 async fn read_message<R: tokio::io::AsyncBufRead + Unpin>(reader: &mut R) -> Result<Message> {
     let mut line = Vec::new();
     let mut limited = reader.take((MAX_MESSAGE_BYTES + 1) as u64);
-    let count = timeout(Duration::from_secs(5), limited.read_until(b'\n', &mut line)).await??;
+    let count = timeout(IPC_MESSAGE_TIMEOUT, limited.read_until(b'\n', &mut line)).await??;
     if count == 0 { return Err("worker disconnected before replying".into()); }
     if count > MAX_MESSAGE_BYTES { return Err("IPC message exceeds size limit".into()); }
     if !line.ends_with(b"\n") { return Err("truncated IPC message (missing newline delimiter)".into()); }
