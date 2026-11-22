@@ -2,7 +2,7 @@
 
 **Status:** Initial source audit; not a complete security, licensing, or hardware audit  
 **Audited repository:** NotADeveloper4665/Syzygy  
-**Audited branch:** main  
+**Audited ref:** `main` at `c50d417c774320632cbe6fa6fc1f1a6bdfc8c58d`  
 **Audit date:** 2026-11-22  
 **Purpose:** Identify real component ownership and migration constraints before Aphelion implementation.
 
