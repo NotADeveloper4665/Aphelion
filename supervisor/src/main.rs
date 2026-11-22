@@ -195,7 +195,7 @@ async fn read_message<R: tokio::io::AsyncBufRead + Unpin>(reader: &mut R) -> Res
 
 async fn send_message<W: tokio::io::AsyncWrite + Unpin>(writer: &mut W, message: &Message) -> Result<()> {
     let mut bytes = serde_json::to_vec(message)?;
-    if bytes.len() > MAX_MESSAGE_BYTES { return Err("outgoing IPC message exceeds size limit".into()); }
+    if bytes.len().saturating_add(1) > MAX_MESSAGE_BYTES { return Err("outgoing IPC message exceeds size limit".into()); }
     bytes.push(b'\n');
     writer.write_all(&bytes).await?;
     writer.flush().await?;
@@ -246,6 +246,90 @@ async fn reap_worker(child: &mut Child, graceful_wait: Duration) -> Result<std::
 mod tests {
     use super::*;
     use std::process::Stdio;
+
+    fn message_at_frame_limit() -> Message {
+        let mut message = Message::new(
+            "event",
+            "worker.metrics",
+            "worker-a",
+            1,
+            None,
+            None,
+            json!({"padding": ""}),
+        );
+        let base_len = serde_json::to_vec(&message).expect("serialize base message").len();
+        let padding_len = MAX_MESSAGE_BYTES - base_len - 1;
+        message.body = json!({"padding": "x".repeat(padding_len)});
+        let frame_len = serde_json::to_vec(&message).expect("serialize padded message").len() + 1;
+        assert_eq!(frame_len, MAX_MESSAGE_BYTES);
+        message
+    }
+
+    #[tokio::test]
+    async fn ipc_reader_accepts_frame_at_size_limit() {
+        let message = message_at_frame_limit();
+        let mut frame = serde_json::to_vec(&message).expect("serialize message");
+        frame.push(b'\\n');
+        let (mut writer, reader) = tokio::io::duplex(MAX_MESSAGE_BYTES + 1);
+        writer.write_all(&frame).await.expect("write boundary frame");
+        writer.shutdown().await.expect("close frame writer");
+
+        let decoded = read_message(&mut BufReader::new(reader))
+            .await
+            .expect("exactly-at-limit frame should be accepted");
+        assert_eq!(decoded.message_type, "worker.metrics");
+    }
+
+    #[tokio::test]
+    async fn ipc_writer_counts_newline_toward_size_limit() {
+        let message = message_at_frame_limit();
+        let (mut reader, mut writer) = tokio::io::duplex(MAX_MESSAGE_BYTES + 1);
+        send_message(&mut writer, &message).await.expect("send boundary frame");
+        let mut frame = vec![0; MAX_MESSAGE_BYTES];
+        reader.read_exact(&mut frame).await.expect("read boundary frame");
+        assert_eq!(frame.last(), Some(&b'\\n'));
+    }
+
+    #[tokio::test]
+    async fn ipc_writer_rejects_frame_one_byte_over_limit() {
+        let mut message = message_at_frame_limit();
+        message.body = json!({"padding": "x".repeat(MAX_MESSAGE_BYTES)});
+        let (mut reader, mut writer) = tokio::io::duplex(MAX_MESSAGE_BYTES + 1);
+        assert!(send_message(&mut writer, &message).await.is_err());
+        let mut unexpected = Vec::new();
+        reader.read_to_end(&mut unexpected).await.expect("read empty pipe");
+        assert!(unexpected.is_empty());
+    }
+
+    #[tokio::test]
+    async fn ipc_reader_rejects_malformed_json() {
+        let (mut writer, reader) = tokio::io::duplex(64);
+        writer.write_all(b"not-json\\n").await.expect("write malformed frame");
+        let result = read_message(&mut BufReader::new(reader)).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn ipc_reader_rejects_oversized_frame() {
+        let (mut writer, reader) = tokio::io::duplex(MAX_MESSAGE_BYTES + 2);
+        writer.write_all(&vec![b'x'; MAX_MESSAGE_BYTES + 1]).await.expect("write oversized frame");
+        let result = read_message(&mut BufReader::new(reader)).await;
+        assert!(result.unwrap_err().to_string().contains("size limit"));
+    }
+
+    #[tokio::test]
+    async fn ipc_reader_rejects_truncated_and_disconnected_frames() {
+        let (mut writer, reader) = tokio::io::duplex(64);
+        writer.write_all(b"{}").await.expect("write truncated frame");
+        writer.shutdown().await.expect("close truncated frame writer");
+        let truncated = read_message(&mut BufReader::new(reader)).await;
+        assert!(truncated.unwrap_err().to_string().contains("truncated"));
+
+        let (writer, reader) = tokio::io::duplex(64);
+        drop(writer);
+        let disconnected = read_message(&mut BufReader::new(reader)).await;
+        assert!(disconnected.unwrap_err().to_string().contains("disconnected"));
+    }
 
     #[tokio::test]
     async fn reaps_worker_that_exits_gracefully() {
