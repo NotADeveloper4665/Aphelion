@@ -109,7 +109,7 @@ mod tests {
     }
 
     #[test]
-    fn dispatches_fragmented_play_and_teardown_then_reports_events() {
+    fn serves_rtsp_session_over_tcp_and_reports_ordered_lifecycle_events() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         let server = thread::spawn(move || {
@@ -137,7 +137,7 @@ mod tests {
         client.write_all(sdp).unwrap();
         assert!(read_response(&mut client).contains("CSeq: 2"));
 
-        let setup = request("SETUP", 3, "Transport: RTP/AVP/UDP;unicast;client_port=6000-6001\r\n");
+        let setup = format!("SETUP rtsp://127.0.0.1/streamid=video RTSP/1.0\r\nCSeq: 3\r\nTransport: RTP/AVP/UDP;unicast;client_port=6000-6001\r\n\r\n");
         client.write_all(setup.as_bytes()).unwrap();
         let setup_response = read_response(&mut client);
         assert!(setup_response.contains("server_port=5000-5001"));
