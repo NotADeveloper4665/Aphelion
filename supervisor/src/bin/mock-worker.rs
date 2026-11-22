@@ -26,7 +26,8 @@ async fn main() -> Result<()> {
         Some(hello_id.clone()), None,
         json!({"build": "mock-worker/0.1.0", "capabilities": ["session.start", "session.stop", "worker.health"]}))).await?;
     let ack = read_message(&mut reader).await?;
-    if ack.kind != "response" || ack.message_type != "worker.hello_ack" || ack.request_id.as_deref() != Some(hello_id.as_str())\n        || !protocol_version_supported(&ack.protocol)\n        || !message_identity_matches(&ack, worker_id, generation) {
+    if ack.kind != "response" || ack.message_type != "worker.hello_ack" || ack.request_id.as_deref() != Some(hello_id.as_str())
+        || !protocol_version_supported(&ack.protocol)\n        || !message_identity_matches(&ack, worker_id, generation) {
         return Err("supervisor handshake acknowledgement was invalid".into());
     }
     println!("mock-worker: handshake accepted");
@@ -34,7 +35,9 @@ async fn main() -> Result<()> {
     let mut active_sessions = HashSet::<String>::new();
     loop {
         let request = read_message(&mut reader).await?;
-        if request.kind != "request" { return Err("worker expected request message".into()); }\n        if !protocol_version_supported(&request.protocol) { return Err("unsupported request protocol version".into()); }\n        if !matches!(request.request_id.as_deref(), Some(id) if !id.is_empty()) { return Err("request requires a non-empty request_id".into()); }
+        if request.kind != "request" { return Err("worker expected request message".into()); }
+        if !protocol_version_supported(&request.protocol) { return Err("unsupported request protocol version".into()); }
+        if !matches!(request.request_id.as_deref(), Some(id) if !id.is_empty()) { return Err("request requires a non-empty request_id".into()); }
         if !message_identity_matches(&request, worker_id, generation) {
             return Err("request addressed to a different worker generation".into());
         }
