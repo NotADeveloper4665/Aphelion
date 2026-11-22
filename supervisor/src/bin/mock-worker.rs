@@ -1,6 +1,6 @@
 use aphelion_supervisor::{message_identity_matches, protocol_version_supported, Message, PROTOCOL_MAJOR, PROTOCOL_MINOR, MAX_MESSAGE_BYTES};
 use serde_json::json;
-use std::{collections::HashSet, env, path::PathBuf, time::Duration};
+use std::{collections::{HashMap, HashSet, VecDeque}, env, path::PathBuf, time::Duration};
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     net::UnixStream,
@@ -34,6 +34,7 @@ async fn main() -> Result<()> {
     println!("mock-worker: handshake accepted");
 
     let mut active_sessions = HashSet::<String>::new();
+    let mut request_cache = RequestCache::new(MAX_CACHED_REQUESTS);
     loop {
         let request = read_message(&mut reader).await?;
         if request.kind != "request" { return Err("worker expected request message".into()); }
@@ -42,12 +43,15 @@ async fn main() -> Result<()> {
         if !message_identity_matches(&request, worker_id, generation) {
             return Err("request addressed to a different worker generation".into());
         }
+        if let Some(cached_response) = request_cache.lookup(&request)? {
+            send(&mut write, cached_response).await?;
+            continue;
+        }
         let session_id = request.session_id.clone();
         let (body, should_exit) = match request.message_type.as_str() {
             "session.start" => {
                 let sid = session_id.as_deref().ok_or("session.start requires session_id")?;
-                let inserted = active_sessions.insert(sid.to_owned());
-                (json!({"state": "running", "created": inserted, "active_sessions": active_sessions.len()}), false)
+                (start_session(&mut active_sessions, sid), false)
             }
             "worker.health" => (
                 json!({
@@ -66,8 +70,7 @@ async fn main() -> Result<()> {
             ),
             "session.stop" => {
                 let sid = session_id.as_deref().ok_or("session.stop requires session_id")?;
-                let removed = active_sessions.remove(sid);
-                (json!({"state": "stopped", "was_active": removed, "active_sessions": active_sessions.len()}), false)
+                (stop_session(&mut active_sessions, sid), false)
             }
             "worker.shutdown" => {
                 active_sessions.clear();
@@ -75,8 +78,9 @@ async fn main() -> Result<()> {
             }
             other => (json!({"error": "UNSUPPORTED_MESSAGE", "message": other}), false),
         };
-        let response = Message::new("response", request.message_type, worker_id, generation,
-            request.request_id, session_id, body);
+        let response = Message::new("response", request.message_type.clone(), worker_id, generation,
+            request.request_id.clone(), session_id, body);
+        request_cache.insert(&request, &response)?;
         send(&mut write, &response).await?;
         if should_exit {
             println!("mock-worker: shutdown acknowledged; exiting");
@@ -84,6 +88,61 @@ async fn main() -> Result<()> {
         }
     }
     Ok(())
+}
+
+const MAX_CACHED_REQUESTS: usize = 128;
+
+struct RequestCache {
+    entries: HashMap<String, (Vec<u8>, Message)>,
+    oldest_first: VecDeque<String>,
+    capacity: usize,
+}
+
+impl RequestCache {
+    fn new(capacity: usize) -> Self {
+        Self { entries: HashMap::new(), oldest_first: VecDeque::new(), capacity }
+    }
+
+    fn lookup(&self, request: &Message) -> Result<Option<&Message>> {
+        let request_id = request.request_id.as_deref().ok_or("request requires a non-empty request_id")?;
+        let Some((fingerprint, response)) = self.entries.get(request_id) else {
+            return Ok(None);
+        };
+        let encoded = serde_json::to_vec(request)?;
+        if *fingerprint != encoded {
+            return Err(format!("request_id {request_id} was reused with different content").into());
+        }
+        Ok(Some(response))
+    }
+
+    fn insert(&mut self, request: &Message, response: &Message) -> Result<()> {
+        let request_id = request.request_id.as_deref().ok_or("request requires a non-empty request_id")?.to_owned();
+        if self.capacity == 0 {
+            return Ok(());
+        }
+        if !self.entries.contains_key(&request_id) {
+            while self.entries.len() >= self.capacity {
+                if let Some(oldest) = self.oldest_first.pop_front() {
+                    self.entries.remove(&oldest);
+                } else {
+                    break;
+                }
+            }
+            self.oldest_first.push_back(request_id.clone());
+        }
+        self.entries.insert(request_id, (serde_json::to_vec(request)?, response.clone()));
+        Ok(())
+    }
+}
+
+fn start_session(active_sessions: &mut HashSet<String>, session_id: &str) -> serde_json::Value {
+    let created = active_sessions.insert(session_id.to_owned());
+    json!({"state": "running", "created": created, "active_sessions": active_sessions.len()})
+}
+
+fn stop_session(active_sessions: &mut HashSet<String>, session_id: &str) -> serde_json::Value {
+    let was_active = active_sessions.remove(session_id);
+    json!({"state": "stopped", "was_active": was_active, "active_sessions": active_sessions.len()})
 }
 
 fn arg_value<'a>(args: &'a [String], name: &str) -> Result<&'a str> {

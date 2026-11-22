@@ -33,12 +33,19 @@ Expected log sequence includes:
 - `shutdown acknowledged`
 - worker process exit status
 
+## Request and session retry behavior
+
+- `request_id` is scoped to one worker generation. The worker caches the last 128 completed request/response pairs in FIFO order.
+- An exact retry with a cached request ID receives the original response without applying the request again. Reusing a cached ID with different content is rejected and closes the worker IPC session.
+- Retries older than the bounded cache window may be processed again. Session operations remain idempotent across distinct request IDs: starting an active session returns `created: false`; stopping an inactive session returns `was_active: false`.
+- The cache is in-memory and is discarded when the worker exits. It does not provide crash-safe exactly-once execution or restore desired sessions after a restart.
+
 ## Deliberate prototype limits
 
 - One worker and one demonstration session per run.
 - `SOCK_STREAM` with newline-delimited JSON; this is a prototype choice, not the final transport decision.
 - 64 KiB maximum message size.
-- No external client API, restart policy, heartbeat, peer-credential verification, session recovery, or real media subsystem.
+- No external client API, bounded restart manager, heartbeat, peer-credential verification, durable request deduplication, session recovery, or real media subsystem.
 - The worker is a Rust mock, not the Syzygy C++ worker.
 - No media payload crosses the control socket.
 
@@ -46,4 +53,4 @@ Expected log sequence includes:
 
 GitHub Actions currently performs a workspace build, IPC envelope unit tests, and an end-to-end supervisor/worker smoke run. The smoke run has confirmed handshake, start, health, stop, shutdown acknowledgement, and child exit status 0.
 
-This is not yet a full contract test suite. The next verification work is malformed/oversized messages, version mismatch, duplicate requests, worker crash, shutdown timeout, and supervisor loss. Then run the same build and smoke sequence on the target Fedora host before treating the prototype as stable.
+CI now covers incompatible protocol versions, missing request IDs, stale worker generations, incorrect response types, request correlation, malformed/oversized/truncated/disconnected IPC input, crash reaping, graceful exit, and SIGTERM-to-SIGKILL escalation. Duplicate request replay and session idempotency are covered by worker unit tests. Bounded automatic worker restart, supervisor-loss cleanup, peer authentication, durable session recovery, and Fedora-host verification remain open.
