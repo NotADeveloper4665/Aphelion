@@ -72,26 +72,26 @@ jobs:
         run: |
           set -euo pipefail
           stub="$RUNNER_TEMP/syzygy-duplicate-stub"
+          process_source="$RUNNER_TEMP/syzygy-duplicate-stub.c"
           launch_marker="$RUNNER_TEMP/syzygy-duplicate-launched"
-          cat > "$stub" <<'EOF'
-          #!/bin/sh
-          if [ "${1:-}" = "-stop" ]; then exit 0; fi
-          touch "$APHELION_TEST_LAUNCH_MARKER"
-          exec sleep 60
-          EOF
-          chmod +x "$stub"
-          process_source="$RUNNER_TEMP/syzygy-process.c"
-          named_process="$RUNNER_TEMP/syzygy-process"
           cat > "$process_source" <<'EOF'
+          #include <stdio.h>
+          #include <stdlib.h>
+          #include <string.h>
           #include <sys/prctl.h>
           #include <unistd.h>
-          int main(void) {
+          int main(int argc, char **argv) {
+            if (argc > 1 && strcmp(argv[1], "-stop") == 0) return 0;
             if (prctl(PR_SET_NAME, "syzygy", 0, 0, 0) != 0) return 1;
+            if (!(argc > 1 && strcmp(argv[1], "--existing") == 0)) {
+              const char *marker = getenv("APHELION_TEST_LAUNCH_MARKER");
+              if (marker != NULL) { FILE *file = fopen(marker, "w"); if (file) fclose(file); }
+            }
             for (;;) pause();
           }
           EOF
-          cc "$process_source" -o "$named_process"
-          "$named_process" &
+          cc "$process_source" -o "$stub"
+          "$stub" --existing &
           existing_pid=$!
           cleanup() {
             kill -TERM "$existing_pid" 2>/dev/null || true
