@@ -1,4 +1,4 @@
-use aphelion_supervisor::{message_identity_matches, protocol_version_supported, Message, PROTOCOL_MAJOR, PROTOCOL_MINOR, MAX_MESSAGE_BYTES};
+use aphelion_supervisor::{message_identity_matches, protocol_version_supported, Message, MAX_MESSAGE_BYTES};
 use serde_json::json;
 use std::{collections::{HashMap, HashSet, VecDeque}, env, path::PathBuf, time::Duration};
 use tokio::{

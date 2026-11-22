@@ -2,7 +2,7 @@
 
 Aphelion is an independently developed, local-first Linux game-streaming host. It selectively inherits and progressively replaces components from Syzygy while maintaining a separate project, roadmap, and release lifecycle.
 
-**Project status:** Rust control-plane prototype in progress. No streaming implementation is present yet.
+**Project status:** CI-verified Rust control-plane prototype with bounded worker restart/backoff and versioned local IPC. No streaming implementation is present yet.
 
 ## Initial direction
 
@@ -13,7 +13,13 @@ Aphelion is an independently developed, local-first Linux game-streaming host. I
 - Replace components incrementally, only after tests demonstrate compatibility and a real architectural benefit.
 - Require no cloud account, subscription, or vendor service for core streaming.
 
-## Rust control-plane prototype\n\nThe first executable Milestone 1 slice is on the [`prototype/rust-control-plane`](https://github.com/NotADeveloper4665/Aphelion/tree/prototype/rust-control-plane) branch. It builds a Rust supervisor and separate mock-worker binary that exchange versioned JSON over a local Unix socket. See [build and run instructions](docs/CONTROL-PLANE-PROTOTYPE.md). This does not modify Syzygy or implement media streaming.\n\n## Architecture documents
+## Rust control-plane prototype
+
+The executable Milestone 1 slice is on the [`prototype/rust-control-plane`](https://github.com/NotADeveloper4665/Aphelion/tree/prototype/rust-control-plane) branch. It builds a Rust supervisor and separate mock-worker binary that exchange versioned JSON over a local Unix socket. The supervisor bounds worker restarts with exponential backoff, validates worker identity and response correlation, and cleans up child processes. Exact request retries replay their cached response; session start and stop remain idempotent. See [build and run instructions](docs/CONTROL-PLANE-PROTOTYPE.md).
+
+This does not modify Syzygy or implement media streaming. The worker is still a Rust mock; all media handling remains unimplemented in Aphelion.
+
+## Architecture documents
 
 - [Founding architecture](docs/FOUNDING-ARCHITECTURE.md) — principles, process model, control contracts, extraction gates, and milestones.
 - [Initial Syzygy inheritance audit](docs/SYZYGY-INHERITANCE-AUDIT.md) — observed capture, encoding, audio, session, and network ownership in the current Syzygy source.
