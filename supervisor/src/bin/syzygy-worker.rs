@@ -23,6 +23,7 @@ use uuid::Uuid;
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
+const SYZYGY_STOP_COMMAND_TIMEOUT: Duration = Duration::from_secs(12);
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -405,6 +406,7 @@ async fn stop_process<W: AsyncWrite + Unpin>(
     worker_id: &str,
     generation: u64,
 ) -> Result<()> {
+    request_syzygy_service_stop().await;
     let _ = killpg(process.process_group, Signal::SIGTERM);
     let graceful = timeout(SHUTDOWN_GRACE, async {
         loop {
@@ -447,6 +449,43 @@ async fn stop_process<W: AsyncWrite + Unpin>(
     flush_session_events(session_events, sessions, writer, worker_id, generation).await?;
     process.cleaned = true;
     Ok(())
+}
+
+/// Ask Syzygy's own background manager to stop, using the exact binary selected
+/// for this worker. Aphelion also owns a foreground process group, so the
+/// direct group shutdown below remains necessary and is the fallback if the
+/// service manager has no matching instance or the command fails.
+async fn request_syzygy_service_stop() {
+    let Some(executable) = env::var_os("APHELION_SYZYGY_EXECUTABLE") else {
+        eprintln!("syzygy-worker: cannot request Syzygy -stop: executable is unset");
+        return;
+    };
+
+    let mut command = Command::new(executable);
+    command
+        .arg("-stop")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    let result = timeout(SYZYGY_STOP_COMMAND_TIMEOUT, command.output()).await;
+
+    match result {
+        Ok(Ok(output)) => {
+            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+            eprintln!(
+                "syzygy-worker: Syzygy -stop exited with {}; stdout={stdout:?}; stderr={stderr:?}",
+                output.status
+            );
+        }
+        Ok(Err(error)) => {
+            eprintln!("syzygy-worker: Syzygy -stop failed to launch: {error}");
+        }
+        Err(_) => {
+            eprintln!("syzygy-worker: Syzygy -stop timed out; escalating to owned process group");
+        }
+    }
 }
 
 async fn handshake<R, W>(
