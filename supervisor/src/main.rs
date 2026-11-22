@@ -22,7 +22,11 @@ async fn main() -> Result<()> {
     let listener = UnixListener::bind(&socket_path)?;
 
     let executable = env::current_exe()?;
-    let worker_executable = executable.parent().ok_or("supervisor has no parent directory")?.join("mock-worker");
+    let worker_name = match env::var("APHELION_WORKER_KIND").as_deref() {
+        Ok("syzygy") => "syzygy-worker",
+        _ => "mock-worker",
+    };
+    let worker_executable = executable.parent().ok_or("supervisor has no parent directory")?.join(worker_name);
     if !worker_executable.is_file() {
         return Err(format!("mock worker binary not found at {} (build the whole workspace)", worker_executable.display()).into());
     }
