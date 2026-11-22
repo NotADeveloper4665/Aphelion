@@ -35,3 +35,27 @@ jobs:
           grep -Fq "observed worker event Started" <<<"$output"
           grep -Fq "observed worker event Stopped" <<<"$output"
           grep -Fq "worker generation 2 exited with exit status: 0" <<<"$output"
+
+      - name: Verify Syzygy process adapter with a stub binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          stub="$RUNNER_TEMP/syzygy-stub"
+          arg_log="$RUNNER_TEMP/syzygy-args"
+          cat > "$stub" <<'EOF'
+          #!/bin/sh
+          printf '%s\n' "$SYZYGY_MANAGED_CHILD" "$@" > "$APHELION_TEST_ARG_LOG"
+          exec sleep 60
+          EOF
+          chmod +x "$stub"
+          output="$(APHELION_WORKER_KIND=syzygy APHELION_SYZYGY_EXECUTABLE="$stub" APHELION_TEST_ARG_LOG="$arg_log" ./target/debug/supervisor 2>&1)" || {
+            printf '%s\n' "$output"
+            exit 1
+          }
+          printf '%s\n' "$output"
+          grep -Fq '"state":"process_started"' <<<"$output"
+          grep -Fq '"process_running":true' <<<"$output"
+          grep -Fq '"state":"stopped"' <<<"$output"
+          grep -Fxq "1" "$arg_log"
+          grep -Fxq -- "-s" "$arg_log"
+          grep -Fxq -- "-foreground" "$arg_log"
