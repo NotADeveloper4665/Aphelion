@@ -72,6 +72,9 @@ async fn run_demo(
     if !protocol_version_supported(&hello.protocol) {
         return Err("worker protocol version is incompatible".into());
     }
+    if !matches!(hello.request_id.as_deref(), Some(id) if !id.is_empty()) {
+        return Err("worker.hello requires a non-empty request_id".into());
+    }
     send_message(&mut write, &Message::new(
         "response", "worker.hello_ack", worker_id, generation,
         hello.request_id.clone(), None,
