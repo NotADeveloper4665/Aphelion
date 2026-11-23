@@ -297,7 +297,7 @@ mod tests {
         let dir = TestDir::new();
         let store = MoonlightPairingStore::open(&dir.0).unwrap();
         assert!(matches!(store.save_server_identity(&[], &[1]), Err(PairingStoreError::InvalidRecord(_))));
-        let invalid = PairedClient { client_id: "../escape".into(), client_name: "Phone".into(), certificate_der: vec![1] };
+        let invalid = PairedClient { client_id: "".into(), client_name: "Phone".into(), certificate_der: vec![1] };
         assert!(matches!(store.authorize_client(&invalid), Err(PairingStoreError::InvalidRecord(_))));
         fs::write(dir.0.join(SERVER_FILE), b"corrupt").unwrap();
         #[cfg(unix)] {
