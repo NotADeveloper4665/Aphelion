@@ -76,14 +76,21 @@ pub struct SoftwareVideoPipeline<S: FrameSource> {
 }
 
 impl<S: FrameSource> SoftwareVideoPipeline<S> {
-    /// Build the H.264 media path from a completed authenticated and negotiated session.
-    /// The caller must derive ciphers from that session's validated launch key and
-    /// reserve the RTP/RTCP pair before advertising it in RTSP SETUP.
-    pub fn from_negotiated_session(
+    /// Reserve video transport before RTSP SETUP and build its negotiated media pipeline later.
+    /// The caller must derive ciphers from the authenticated launch key and retain the
+    /// returned reservation until the client RTP/RTCP ports are known.
+    pub fn reserve_video_ports(server_bind_ip: IpAddr) -> Result<ReservedUdpPortPair, std::io::Error> {
+        ReservedUdpPortPair::bind(server_bind_ip)
+    }
+
+    /// Build the H.264 media path after ANNOUNCE/SETUP using the exact server ports already
+    /// advertised by the RTSP session. The caller must authenticate the launch and keep
+    /// audio/control reservations alive separately.
+    pub fn from_reserved_session(
         source: S,
         profile: &MoonlightStreamProfile,
         ciphers: NegotiatedMoonlightCiphers,
-        server_bind_ip: IpAddr,
+        reserved_ports: ReservedUdpPortPair,
         peer_ip: IpAddr,
         client_video_ports: MediaPortPair,
         multi_fec_supported: bool,
@@ -91,7 +98,6 @@ impl<S: FrameSource> SoftwareVideoPipeline<S> {
         if profile.codec != VideoCodec::H264 {
             return Err(Box::new(crate::moonlight_video::MoonlightPacketError::UnsupportedCodec));
         }
-        let reserved_ports = ReservedUdpPortPair::bind(server_bind_ip)?;
         let video_config = MoonlightVideoConfig {
             shard_size: profile.packet_size as usize,
             ..MoonlightVideoConfig::default()
@@ -117,6 +123,23 @@ impl<S: FrameSource> SoftwareVideoPipeline<S> {
             profile.width, profile.height, profile.width, profile.height,
         )?;
         Ok((pipeline, advertised_ports))
+    }
+
+    /// Convenience constructor for callers that already know the negotiated client ports.
+    /// Streaming servers should reserve and advertise the returned pair before SETUP.
+    pub fn from_negotiated_session(
+        source: S,
+        profile: &MoonlightStreamProfile,
+        ciphers: NegotiatedMoonlightCiphers,
+        server_bind_ip: IpAddr,
+        peer_ip: IpAddr,
+        client_video_ports: MediaPortPair,
+        multi_fec_supported: bool,
+    ) -> Result<(Self, MediaPortPair), Box<dyn std::error::Error + Send + Sync>> {
+        let reserved_ports = Self::reserve_video_ports(server_bind_ip)?;
+        Self::from_reserved_session(
+            source, profile, ciphers, reserved_ports, peer_ip, client_video_ports, multi_fec_supported,
+        )
     }
 
     pub fn new(
