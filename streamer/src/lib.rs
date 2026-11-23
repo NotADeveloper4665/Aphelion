@@ -320,3 +320,4 @@ pub mod moonlight_pairing_store;
 pub mod http;
 pub mod moonlight_pairing_coordinator;
 pub mod tls_http;
+pub mod moonlight_pairing_https;
