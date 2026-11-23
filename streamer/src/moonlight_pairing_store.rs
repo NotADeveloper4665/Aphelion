@@ -279,7 +279,14 @@ mod tests {
         let tablet = PairedClient { client_id: "tablet-uuid".into(), client_name: "Tablet".into(), certificate_der: vec![0x30, 0x02, 0x00] };
         store.authorize_client(&tablet).unwrap();
         store.authorize_client(&phone).unwrap();
-        assert_eq!(store.load_clients().unwrap(), vec![phone, tablet]);
+        let loaded = store.load_clients().unwrap();
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(loaded[0].client_id, "phone-uuid");
+        assert_eq!(loaded[0].client_name, "Phone");
+        assert_eq!(loaded[0].certificate_der, vec![0x30, 0x01, 0x00]);
+        assert_eq!(loaded[1].client_id, "tablet-uuid");
+        assert_eq!(loaded[1].client_name, "Tablet");
+        assert_eq!(loaded[1].certificate_der, vec![0x30, 0x02, 0x00]);
         assert!(store.remove_client("phone-uuid").unwrap());
         assert!(!store.remove_client("phone-uuid").unwrap());
         assert_eq!(store.load_clients().unwrap().len(), 1);
