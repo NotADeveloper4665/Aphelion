@@ -1,7 +1,7 @@
 //! Bounded HTTP/1.x request decoder for Moonlight GameStream control requests.
 //! It accepts one bodyless request per connection. TLS, authentication, query decoding,
 //! and response policy belong to the embedding server.
-const MAX_REQUEST_BYTES: usize = 16 * 1024;
+const MAX_REQUEST_BYTES: usize = 64 * 1024;
 const MAX_HEADER_COUNT: usize = 32;
 const MAX_HEADER_NAME_BYTES: usize = 128;
 const MAX_HEADER_VALUE_BYTES: usize = 4 * 1024;
@@ -21,7 +21,29 @@ impl HttpRequest {
         if matches.next().is_some() { None } else { Some(value) }
     }
     pub fn headers(&self) -> &[(String, String)] { &self.headers }
+
+    /// Decode application/x-www-form-urlencoded query fields. Duplicate names are
+    /// rejected so launch and pairing policy cannot depend on parser ordering.
+    pub fn query_parameters(&self) -> Result<Vec<(String, String)>, QueryError> {
+        let Some(query) = self.query.as_deref() else { return Ok(Vec::new()); };
+        parse_query(query)
+    }
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QueryError { TooManyParameters, DuplicateParameter, MalformedEscape, InvalidUtf8, InvalidControl }
+impl std::fmt::Display for QueryError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::TooManyParameters => "HTTP query exceeds the parameter limit",
+            Self::DuplicateParameter => "HTTP query contains a duplicate parameter",
+            Self::MalformedEscape => "HTTP query contains an invalid percent escape",
+            Self::InvalidUtf8 => "HTTP query value is not valid UTF-8",
+            Self::InvalidControl => "HTTP query contains a control character",
+        })
+    }
+}
+impl std::error::Error for QueryError {}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HttpVersion { V10, V11 }
 
@@ -34,7 +56,7 @@ pub enum HttpError {
 impl std::fmt::Display for HttpError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
-            Self::RequestTooLarge => "HTTP request exceeds the 16 KiB limit",
+            Self::RequestTooLarge => "HTTP request exceeds the 64 KiB limit",
             Self::InvalidEncoding => "HTTP request must contain printable ASCII only",
             Self::MalformedRequestLine => "malformed HTTP request line",
             Self::UnsupportedMethod => "GameStream control requests must use GET",
@@ -120,6 +142,53 @@ fn parse_headers(bytes: &[u8]) -> Result<Option<HttpRequest>, HttpError> {
     }
     Ok(Some(HttpRequest { method: method.to_owned(), path: path.to_owned(), query, version, headers }))
 }
+pub fn parse_query(query: &str) -> Result<Vec<(String, String)>, QueryError> {
+    let mut fields = Vec::new();
+    for pair in query.split('&').filter(|part| !part.is_empty()) {
+        if fields.len() >= 128 { return Err(QueryError::TooManyParameters); }
+        let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+        let key = decode_component(key)?;
+        let value = decode_component(value)?;
+        if key.is_empty() || key.len() > 128 || value.len() > MAX_REQUEST_BYTES {
+            return Err(QueryError::TooManyParameters);
+        }
+        if fields.iter().any(|(existing, _): &(String, String)| existing == &key) {
+            return Err(QueryError::DuplicateParameter);
+        }
+        fields.push((key, value));
+    }
+    Ok(fields)
+}
+fn decode_component(value: &str) -> Result<String, QueryError> {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'+' => { decoded.push(b' '); index += 1; }
+            b'%' => {
+                if index + 2 >= bytes.len() { return Err(QueryError::MalformedEscape); }
+                let high = hex_nibble(bytes[index + 1]).ok_or(QueryError::MalformedEscape)?;
+                let low = hex_nibble(bytes[index + 2]).ok_or(QueryError::MalformedEscape)?;
+                decoded.push((high << 4) | low);
+                index += 3;
+            }
+            byte => { decoded.push(byte); index += 1; }
+        }
+    }
+    let decoded = String::from_utf8(decoded).map_err(|_| QueryError::InvalidUtf8)?;
+    if decoded.chars().any(char::is_control) { return Err(QueryError::InvalidControl); }
+    Ok(decoded)
+}
+fn hex_nibble(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
 fn is_token(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || matches!(byte, b'!' | b'#' | b'$' | b'%' | b'&' | b'\'' | b'*' | b'+' | b'-' | b'.' | b'^' | b'_' | b'|' | b'~')
 }
@@ -157,6 +226,15 @@ mod tests {
         let mut decoder = HttpRequestDecoder::new();
         assert_eq!(decoder.push(b"GET /pair HTTP/1.1\r\nHost: local\r\n"), Ok(None));
         assert!(decoder.buffered_bytes() < MAX_REQUEST_BYTES);
+    }
+    #[test]
+    fn decodes_bounded_query_parameters_and_rejects_duplicates() {
+        assert_eq!(parse_query("uniqueid=phone-1&devicename=Pixel+9a").unwrap(),
+            vec![("uniqueid".into(), "phone-1".into()), ("devicename".into(), "Pixel 9a".into())]);
+        assert_eq!(parse_query("name=Phone%20One").unwrap()[0].1, "Phone One");
+        assert_eq!(parse_query("name=one&name=two"), Err(QueryError::DuplicateParameter));
+        assert_eq!(parse_query("name=%xz"), Err(QueryError::MalformedEscape));
+        assert_eq!(parse_query("name=%00"), Err(QueryError::InvalidControl));
     }
     #[test]
     fn rejects_duplicate_framing_headers_and_header_injection() {
