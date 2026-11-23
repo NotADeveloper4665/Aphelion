@@ -167,6 +167,52 @@ mod tests {
     const SERVER_KEY: &[u8] = include_bytes!("../tests/fixtures/server-key.der");
     const CLIENT_KEY: &[u8] = include_bytes!("../tests/fixtures/client-key.der");
 
+    #[derive(Debug)]
+    struct TestServerCertVerifier;
+
+    impl rustls::client::danger::ServerCertVerifier for TestServerCertVerifier {
+        fn verify_server_cert(
+            &self,
+            _end_entity: &CertificateDer<'_>,
+            _intermediates: &[CertificateDer<'_>],
+            _server_name: &rustls::pki_types::ServerName<'_>,
+            _ocsp_response: &[u8],
+            _now: rustls::pki_types::UnixTime,
+        ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+            Ok(rustls::client::danger::ServerCertVerified::assertion())
+        }
+
+        fn verify_tls12_signature(
+            &self,
+            message: &[u8],
+            certificate: &CertificateDer<'_>,
+            signature: &rustls::DigitallySignedStruct,
+        ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+            let provider = rustls::crypto::ring::default_provider();
+            rustls::crypto::verify_tls12_signature(
+                message, certificate, signature, &provider.signature_verification_algorithms,
+            )
+        }
+
+        fn verify_tls13_signature(
+            &self,
+            message: &[u8],
+            certificate: &CertificateDer<'_>,
+            signature: &rustls::DigitallySignedStruct,
+        ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+            let provider = rustls::crypto::ring::default_provider();
+            rustls::crypto::verify_tls13_signature(
+                message, certificate, signature, &provider.signature_verification_algorithms,
+            )
+        }
+
+        fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+            rustls::crypto::ring::default_provider()
+                .signature_verification_algorithms
+                .supported_schemes()
+        }
+    }
+
     #[test]
     fn config_requires_a_valid_matching_certificate_and_pkcs8_key() {
         assert!(server_tls_config(SERVER_CERT, SERVER_KEY).is_ok());
@@ -191,11 +237,12 @@ mod tests {
         use std::{net::TcpStream, thread};
         use rustls::{pki_types::ServerName, ClientConfig, ClientConnection, RootCertStore};
 
-        let mut roots = RootCertStore::empty();
-        roots.add(CertificateDer::from(SERVER_CERT.to_vec())).unwrap();
-        let client_config = ClientConfig::builder()
-            .with_root_certificates(roots)
+        let mut client_config = ClientConfig::builder()
+            .with_root_certificates(RootCertStore::empty())
             .with_no_client_auth();
+        client_config
+            .dangerous()
+            .set_certificate_verifier(Arc::new(TestServerCertVerifier));
         let listener = TlsHttpListener::bind("127.0.0.1:0", SERVER_CERT, SERVER_KEY).unwrap();
         let address = listener.local_addr().unwrap();
         let serving = thread::spawn(move || {
