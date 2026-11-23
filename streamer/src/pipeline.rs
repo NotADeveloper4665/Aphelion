@@ -355,6 +355,14 @@ mod tests {
             "server_port={}-{}", advertised_video_ports.rtp(), advertised_video_ports.rtcp(),
         )));
         assert_eq!(rtsp.negotiated_track_ports(MediaTrack::Video).unwrap().client, client_ports);
+        let premature_ports = SoftwareVideoPipeline::<Frames>::reserve_video_ports(IpAddr::V4(Ipv4Addr::LOCALHOST)).unwrap();
+        let premature_ciphers = MoonlightLaunchCrypto::from_rikey_hex(&"66".repeat(16)).unwrap()
+            .establish_for_profile(false, &profile).unwrap();
+        let premature = SoftwareVideoPipeline::from_rtsp_session(
+            Frames(VecDeque::new()), &rtsp, premature_ciphers, premature_ports,
+            IpAddr::V4(Ipv4Addr::LOCALHOST), false,
+        ).expect_err("media must not start before PLAY");
+        assert!(premature.to_string().contains("PLAY"));
 
         let source = Frames(VecDeque::from([0x24, 0x8c].map(|fill| CapturedFrame {
             width: 16, height: 16, received_at: Instant::now(), bgra: vec![fill; 16 * 16 * 4],
