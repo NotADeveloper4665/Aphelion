@@ -316,3 +316,4 @@ mod tests {
 
 pub mod moonlight_pairing_http;
 pub mod moonlight_pairing_approval;
+pub mod moonlight_pairing_store;
