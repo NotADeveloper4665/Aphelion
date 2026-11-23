@@ -187,6 +187,40 @@ mod tests {
     }
 
     #[test]
+    fn serves_a_real_tls_http_request_and_closes_the_response() {
+        use std::{net::TcpStream, thread};
+        use rustls::{pki_types::ServerName, ClientConfig, ClientConnection, RootCertStore};
+
+        let mut roots = RootCertStore::empty();
+        roots.add(CertificateDer::from(SERVER_CERT.to_vec())).unwrap();
+        let client_config = ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+        let listener = TlsHttpListener::bind("127.0.0.1:0", SERVER_CERT, SERVER_KEY).unwrap();
+        let address = listener.local_addr().unwrap();
+        let serving = thread::spawn(move || {
+            listener.serve_once(|request| {
+                assert_eq!(request.path, "/serverinfo");
+                HttpResponse::xml(HttpStatus::Ok, "<root><status>ready</status></root>")
+            }).unwrap()
+        });
+
+        let socket = TcpStream::connect(address).unwrap();
+        socket.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        let server_name = ServerName::try_from("localhost").unwrap().to_owned();
+        let connection = ClientConnection::new(Arc::new(client_config), server_name).unwrap();
+        let mut stream = StreamOwned::new(connection, socket);
+        stream.write_all(b"GET /serverinfo HTTP/1.1\\r\\nHost: localhost\\r\\n\\r\\n").unwrap();
+        stream.flush().unwrap();
+
+        let mut response = Vec::new();
+        stream.read_to_end(&mut response).unwrap();
+        assert!(response.starts_with(b"HTTP/1.1 200 OK\\r\\n"));
+        assert!(response.ends_with(b"<root><status>ready</status></root>"));
+        assert_eq!(serving.join().unwrap(), address);
+    }
+
+    #[test]
     fn refuses_oversized_response_bodies() {
         let response = HttpResponse::xml(HttpStatus::Ok, vec![b'x'; MAX_RESPONSE_BYTES + 1]);
         assert_eq!(response.encode(), Err(HttpResponseError::ResponseTooLarge));
