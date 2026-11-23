@@ -110,6 +110,8 @@ pub struct MoonlightPairingTransaction {
     server_secret: Option<[u8; CHALLENGE_BYTES]>,
     server_challenge: Option<[u8; CHALLENGE_BYTES]>,
     client_hash: Option<[u8; HASH_BYTES]>,
+    completed_proof_digest: Option<[u8; HASH_BYTES]>,
+    paired_client: Option<PairedClient>,
 }
 
 impl MoonlightPairingTransaction {
@@ -164,6 +166,8 @@ impl MoonlightPairingTransaction {
             server_secret: None,
             server_challenge: None,
             client_hash: None,
+            completed_proof_digest: None,
+            paired_client: None,
         })
     }
 
@@ -257,6 +261,21 @@ impl MoonlightPairingTransaction {
         &mut self,
         client_pairing_secret: &[u8],
     ) -> Result<PairedClient, PairingError> {
+        if self.phase == PairingPhase::Paired {
+            let Some(paired_client) = self.paired_client.as_ref() else {
+                return Err(PairingError::UnexpectedStage);
+            };
+            if client_pairing_secret.len() != CHALLENGE_BYTES + self.client_public_key.size() {
+                return Err(PairingError::UnexpectedStage);
+            }
+            let retry_digest: [u8; HASH_BYTES] = Sha256::digest(client_pairing_secret).into();
+            if self.completed_proof_digest.as_ref()
+                .is_some_and(|digest| retry_digest.ct_eq(digest).unwrap_u8() == 1)
+            {
+                return Ok(paired_client.clone());
+            }
+            return Err(PairingError::UnexpectedStage);
+        }
         self.require_phase(PairingPhase::AwaitingClientPairingSecret)?;
         let Some(server_challenge) = self.server_challenge else {
             return self.fail(PairingError::UnexpectedStage);
@@ -290,20 +309,25 @@ impl MoonlightPairingTransaction {
             return self.fail(PairingError::InvalidClientProof);
         }
 
+        let paired_client = PairedClient {
+            client_id: self.client_id.clone(),
+            client_name: self.client_name.clone(),
+            certificate_der: self.client_certificate_der.clone(),
+        };
+        self.completed_proof_digest = Some(Sha256::digest(client_pairing_secret).into());
+        self.paired_client = Some(paired_client.clone());
         self.client_hash.zeroize();
         self.server_secret.zeroize();
         self.server_challenge.zeroize();
         self.phase = PairingPhase::Paired;
-        Ok(PairedClient {
-            client_id: self.client_id.clone(),
-            client_name: self.client_name.clone(),
-            certificate_der: self.client_certificate_der.clone(),
-        })
+        Ok(paired_client)
     }
 
     fn require_phase(&mut self, expected: PairingPhase) -> Result<(), PairingError> {
         if self.phase != expected {
-            self.phase = PairingPhase::Failed;
+            if self.phase != PairingPhase::Paired {
+                self.phase = PairingPhase::Failed;
+            }
             return Err(PairingError::UnexpectedStage);
         }
         Ok(())
@@ -314,6 +338,8 @@ impl MoonlightPairingTransaction {
         self.server_secret.zeroize();
         self.server_challenge.zeroize();
         self.client_hash.zeroize();
+        self.completed_proof_digest.zeroize();
+        self.paired_client = None;
         Err(error)
     }
 }
@@ -323,6 +349,7 @@ impl Drop for MoonlightPairingTransaction {
         self.server_secret.zeroize();
         self.server_challenge.zeroize();
         self.client_hash.zeroize();
+        self.completed_proof_digest.zeroize();
     }
 }
 
@@ -428,11 +455,14 @@ mod tests {
         assert_eq!(paired.client_name, "Moonlight test client");
         assert_eq!(paired.certificate_der, CLIENT_CERT);
         assert_eq!(transaction.phase(), PairingPhase::Paired);
+        assert_eq!(transaction.client_pairing_secret(&client_pairing_secret).unwrap(), paired);
+        let mut conflicting_proof = client_pairing_secret.clone();
+        conflicting_proof[0] ^= 1;
         assert!(matches!(
-            transaction.client_pairing_secret(&client_pairing_secret),
+            transaction.client_pairing_secret(&conflicting_proof),
             Err(PairingError::UnexpectedStage)
         ));
-        assert_eq!(transaction.phase(), PairingPhase::Failed);
+        assert_eq!(transaction.phase(), PairingPhase::Paired);
     }
 
     #[test]
