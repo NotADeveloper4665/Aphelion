@@ -76,7 +76,7 @@ Video is the first Rust media path. Audio and input remain on Syzygy until their
 
 ## Observability and recovery
 
-Health reports capture state/last-frame age, encoder state/encode duration, queue age/bytes/drops, packet/FEC counts, encryption failures, send errors, and per-session negotiated profile only when each field is measured. Unknown values are null or explicitly unavailable. Control IPC RTT is never labeled stream latency.
+Health reports capture state/last-frame age, encoder state/encode duration, queue age/bytes/drops, packet/FEC counts, encryption failures, send errors, and per-session negotiated profile only when each field is measured. The current software pipeline now exposes measured local frame, packet, byte, failure, and capture-to-send-age counters; it is not yet forwarded through worker health IPC. Unknown values are null or explicitly unavailable. Control IPC RTT is never labeled stream latency.
 
 On worker or device failure, stop admitting work, release queued frames and GPU resources in dependency order, close session sockets, report the failed stage, and let the supervisor apply bounded restart policy. Seamless client recovery, keyframe recovery time, and stale-frame thresholds remain unclaimed until measured.
 

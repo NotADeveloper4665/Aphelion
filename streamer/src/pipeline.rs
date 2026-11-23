@@ -16,6 +16,23 @@ pub enum PipelineStep {
     Sent { frame_index: u32, stats: MoonlightSendStats },
 }
 
+/// Measured counters from the software video path. These values describe only this
+/// worker-local pipeline and do not imply end-to-end client latency.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PipelineHealth {
+    pub captured_frames: u64,
+    pub sent_frames: u64,
+    pub packets_sent: u64,
+    pub bytes_sent: u64,
+    pub capture_failures: u64,
+    pub encoder_failures: u64,
+    pub send_failures: u64,
+    pub last_frame_index: Option<u32>,
+    pub last_capture_age_micros: Option<u64>,
+    pub last_capture_to_send_micros: Option<u64>,
+    pub max_capture_to_send_micros: Option<u64>,
+}
+
 #[derive(Debug)]
 pub enum PipelineError {
     Capture(CaptureError),
@@ -47,6 +64,8 @@ pub struct SoftwareVideoPipeline<S: FrameSource> {
     stream_epoch: Instant,
     submitted_frames: u64,
     next_frame_index: u32,
+    health: PipelineHealth,
+    latest_capture_at: Option<Instant>,
 }
 
 impl<S: FrameSource> SoftwareVideoPipeline<S> {
@@ -62,20 +81,48 @@ impl<S: FrameSource> SoftwareVideoPipeline<S> {
         if capture_width != encoder_width || capture_height != encoder_height {
             return Err(PipelineError::ConfigurationMismatch);
         }
-        Ok(Self { source, encoder, sender, stream_epoch: Instant::now(), submitted_frames: 0, next_frame_index: 0 })
+        Ok(Self {
+            source, encoder, sender, stream_epoch: Instant::now(),
+            submitted_frames: 0, next_frame_index: 0,
+            health: PipelineHealth::default(), latest_capture_at: None,
+        })
     }
 
     /// Captures and submits one frame, then sends an access unit if FFmpeg has completed
     /// one. AUD framing means the first output commonly becomes available after frame 2.
     pub fn pump_once(&mut self) -> Result<PipelineStep, PipelineError> {
-        let frame = self.source.next_frame().map_err(PipelineError::Capture)?;
-        self.encoder.submit(&frame).map_err(PipelineError::Encoder)?;
+        let frame = match self.source.next_frame() {
+            Ok(frame) => frame,
+            Err(error) => {
+                self.health.capture_failures = self.health.capture_failures.saturating_add(1);
+                return Err(PipelineError::Capture(error));
+            }
+        };
+        self.health.captured_frames = self.health.captured_frames.saturating_add(1);
+        self.latest_capture_at = Some(frame.captured_at);
+        if let Err(error) = self.encoder.submit(&frame) {
+            self.health.encoder_failures = self.health.encoder_failures.saturating_add(1);
+            return Err(PipelineError::Encoder(error));
+        }
         self.submitted_frames = self.submitted_frames.saturating_add(1);
         if self.submitted_frames < 2 { return Ok(PipelineStep::Buffered); }
-        match self.encoder.receive_timeout(Duration::from_millis(250)).map_err(PipelineError::Encoder)? {
-            Some(unit) => self.send(unit),
-            None => Ok(PipelineStep::Buffered),
+        match self.encoder.receive_timeout(Duration::from_millis(250)) {
+            Ok(Some(unit)) => self.send(unit),
+            Ok(None) => Ok(PipelineStep::Buffered),
+            Err(error) => {
+                self.health.encoder_failures = self.health.encoder_failures.saturating_add(1);
+                Err(PipelineError::Encoder(error))
+            }
         }
+    }
+
+    /// Return a measured snapshot. Capture age is recalculated when this is called.
+    pub fn health(&self) -> PipelineHealth {
+        let mut snapshot = self.health;
+        snapshot.last_capture_age_micros = self.latest_capture_at.map(|captured_at| {
+            duration_micros(Instant::now().saturating_duration_since(captured_at))
+        });
+        snapshot
     }
 
     /// Closes encoder input, sends any final buffered access units, and returns send stats.
@@ -94,11 +141,32 @@ impl<S: FrameSource> SoftwareVideoPipeline<S> {
     }
 
     fn send(&mut self, unit: EncodedAccessUnit) -> Result<PipelineStep, PipelineError> {
+        let captured_at = unit.captured_at.ok_or(PipelineError::MissingCaptureTimestamp)?;
         let frame_index = self.next_frame_index;
-        let stats = send_unit(&mut self.sender, self.stream_epoch, frame_index, unit)?;
+        let stats = match send_unit(&mut self.sender, self.stream_epoch, frame_index, unit) {
+            Ok(stats) => stats,
+            Err(PipelineError::Sender(error)) => {
+                self.health.send_failures = self.health.send_failures.saturating_add(1);
+                return Err(PipelineError::Sender(error));
+            }
+            Err(error) => return Err(error),
+        };
+        let age = duration_micros(Instant::now().saturating_duration_since(captured_at));
+        self.health.sent_frames = self.health.sent_frames.saturating_add(1);
+        self.health.packets_sent = self.health.packets_sent.saturating_add(stats.packets as u64);
+        self.health.bytes_sent = self.health.bytes_sent.saturating_add(stats.bytes as u64);
+        self.health.last_frame_index = Some(frame_index);
+        self.health.last_capture_to_send_micros = Some(age);
+        self.health.max_capture_to_send_micros = Some(
+            self.health.max_capture_to_send_micros.unwrap_or(0).max(age)
+        );
         self.next_frame_index = self.next_frame_index.wrapping_add(1);
         Ok(PipelineStep::Sent { frame_index, stats })
     }
+}
+
+fn duration_micros(duration: Duration) -> u64 {
+    duration.as_micros().min(u64::MAX as u128) as u64
 }
 
 fn send_unit(
@@ -158,6 +226,11 @@ mod tests {
         assert_eq!(pipeline.pump_once().unwrap(), PipelineStep::Buffered);
         let second = pipeline.pump_once().unwrap();
         let sent_before_finish = usize::from(matches!(second, PipelineStep::Sent { .. }));
+        let health = pipeline.health();
+        assert_eq!(health.captured_frames, 2);
+        assert_eq!(health.sent_frames, sent_before_finish as u64);
+        assert!(health.last_capture_age_micros.is_some());
+        assert_eq!(health.send_failures, 0);
         let flushed = pipeline.finish().unwrap();
         assert_eq!(sent_before_finish + flushed.len(), 2);
 
