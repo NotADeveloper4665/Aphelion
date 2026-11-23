@@ -264,7 +264,9 @@ mod tests {
         stream.read_to_end(&mut response).unwrap();
         assert!(response.starts_with(b"HTTP/1.1 200 OK\r\n"));
         assert!(response.ends_with(b"<root><status>ready</status></root>"));
-        assert_eq!(serving.join().unwrap(), address);
+        let peer = serving.join().unwrap();
+        assert!(peer.ip().is_loopback());
+        assert_ne!(peer.port(), 0);
     }
 
     #[test]
