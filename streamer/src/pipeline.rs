@@ -365,7 +365,7 @@ mod tests {
         assert!(premature.to_string().contains("PLAY"));
 
         let source = Frames(VecDeque::from([0x24, 0x8c].map(|fill| CapturedFrame {
-            width: 16, height: 16, received_at: Instant::now(), bgra: vec![fill; 16 * 16 * 4],
+            width: 16, height: 16, received_at: Instant::now(), bgra: vec![fill; 16 * 16 * 4].into(),
         })));
         let ciphers = MoonlightLaunchCrypto::from_rikey_hex(&"66".repeat(16)).unwrap()
             .establish_for_profile(false, &profile).unwrap();
@@ -418,7 +418,7 @@ mod tests {
             width: config.width,
             height: config.height,
             received_at: Instant::now(),
-            bgra: vec![fill; 16 * 16 * 4],
+            bgra: vec![fill; 16 * 16 * 4].into(),
         })));
         let encoder = FfmpegH264Encoder::spawn(config).expect("CI installs FFmpeg with libx264");
         let receiver = UdpSocket::bind("127.0.0.1:0").unwrap();
@@ -456,7 +456,7 @@ mod tests {
             width: config.width,
             height: config.height,
             received_at: Instant::now(),
-            bgra: vec![fill; 16 * 16 * 4],
+            bgra: vec![fill; 16 * 16 * 4].into(),
         })));
         let encoder = FfmpegH264Encoder::spawn(config).expect("CI installs FFmpeg with libx264");
         let receiver = UdpSocket::bind("127.0.0.1:0").unwrap();
