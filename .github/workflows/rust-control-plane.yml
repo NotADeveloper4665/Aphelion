@@ -376,3 +376,15 @@ jobs:
           path: ${{ runner.temp }}/aphelion-linux-x86_64.tar.gz
           if-no-files-found: error
           retention-days: 30
+
+      - name: Report verification scope
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo '## Verification scope'
+            echo
+            echo 'Hosted checks cover Rust builds/tests, protocol and lifecycle behavior, and stub-process cleanup. A green result permits software development to continue.'
+            echo
+            echo 'Target-host GPU/capture/audio/input matrices, direct-Syzygy comparisons, real-client repetition, process-list evidence, and end-to-end performance remain pending unless separately recorded. They are not inferred from this workflow.'
+          } >> "$GITHUB_STEP_SUMMARY"

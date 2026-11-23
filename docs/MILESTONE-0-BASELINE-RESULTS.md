@@ -116,22 +116,31 @@ This is a limitation of the current execution environment, not evidence of a Syz
 
 ## 6. Baseline disposition
 
-**Disposition: PARTIAL PASS — NOT READY TO EXIT MILESTONE 0.**
+**Formal Milestone 0 status: PARTIAL — target-machine acceptance remains open.**  
+**Software development status: CLEARED TO CONTINUE on GitHub-verifiable work.**
 
-Confirmed:
-- The exact pinned commit completed the hosted Linux CI build/package workflow.
-- Existing targeted Python and C++ smoke checks listed above passed.
-- Headless KWin/PipeWire capture and a software-encoder WAN integration path passed in CI.
+The missing T1600, hardware, and full real-client comparisons are tracked as pending acceptance evidence. They are not treated as failures that block unrelated implementation. They also are not counted as passing. Continue source-level work when the applicable GitHub Actions checks pass, and keep the production compatibility and hardware claims gated on their actual evidence.
 
-Still required before Aphelion media-path implementation:
-1. Run the registered GoogleTest suite with `BUILD_TESTS=ON` on a clean checkout of the pinned commit.
-2. Run a Fedora 44 build/test on the T1600, recording its actual kernel, GPU, driver, compositor, and encoder capabilities.
-3. Exercise the T1600's NVIDIA NVENC/CUDA path and relevant capture backend.
+### Automated pass-through evidence
+
+At Aphelion commit [5034ab77991d8c25cc339865806a2286e879db1a](https://github.com/NotADeveloper4665/Aphelion/commit/5034ab77991d8c25cc339865806a2286e879db1a), [GitHub Actions run #120](https://github.com/NotADeveloper4665/Aphelion/actions/runs/45078777045) passed:
+
+- Workspace build and unit tests, including control-protocol rejection cases and the Rust media pipeline tests.
+- Supervisor/worker IPC smoke tests, injected crashes, bounded restart exhaustion, and Syzygy adapter behavior with test binaries.
+- Graceful shutdown, repeated stub-host lifecycle, child-process cleanup, and installable bundle build.
+
+These checks are sufficient to keep development moving through software milestones. Stub processes and synthetic frames validate Aphelion-owned code paths; they do not prove hardware operation or Moonlight compatibility.
+
+### Remaining before formal Milestone 0 exit and production acceptance
+
+1. Run the registered Syzygy GoogleTest suite with `BUILD_TESTS=ON` on the pinned baseline. Its recorded hosted build used `BUILD_TESTS=OFF`.
+2. Run a Fedora 44 build/test on the T1600 and record its actual kernel, GPU, driver, compositor, and encoder capabilities.
+3. Exercise the T1600 NVIDIA NVENC/CUDA path and relevant capture backend.
 4. Execute audio lifecycle and multi-client input/capture teardown tests.
-5. Record real Moonlight-client compatibility and performance results.
-6. Complete the dependency/license provenance check.
+5. Record repeated real Moonlight-client cycles, direct-Syzygy comparison, process-list cleanup evidence, and performance results.
+6. Complete and record dependency/license provenance review for the intended distributed Rust build.
 
-Do not convert the missing rows to PASS based on successful RPM packaging or generic CI smoke checks. The maintainer must review the remaining evidence before approving the Milestone 0 exit gate.
+Until those checks have evidence, keep M0 formal status partial and keep Rust Moonlight interoperability unclaimed. Development may continue under the automated pass-through gate above.
 
 
 ## Additional Aphelion host observation

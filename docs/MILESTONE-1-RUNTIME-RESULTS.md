@@ -42,3 +42,8 @@ This confirms streaming and client-disconnect observation through the managed ho
 **Result:** Ctrl+C stopped the Aphelion-managed host correctly. This confirms one real-host graceful shutdown on the maintainer's Fedora desktop. No process-list snapshot or terminal shutdown log was supplied, so descendant cleanup is recorded as user-observed rather than independently verified.
 
 This supersedes the earlier follow-up attempt's manual name-based process termination; that earlier attempt did not verify graceful shutdown.
+
+
+## Hosted development gate
+
+At Aphelion commit [5034ab77991d8c25cc339865806a2286e879db1a](https://github.com/NotADeveloper4665/Aphelion/commit/5034ab77991d8c25cc339865806a2286e879db1a), [GitHub Actions run #120](https://github.com/NotADeveloper4665/Aphelion/actions/runs/45078777045) passed the workspace tests, supervisor/worker crash and restart checks, Syzygy adapter tests using stubs, graceful and repeated shutdown/cleanup checks, and the Linux bundle build. This is the automated development gate: continue implementation when these checks pass. It does not close the separate real-host acceptance items above.
