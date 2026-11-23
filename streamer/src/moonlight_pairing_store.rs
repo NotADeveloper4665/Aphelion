@@ -89,22 +89,23 @@ impl MoonlightPairingStore {
         if private_key_pkcs8_der.is_empty() || private_key_pkcs8_der.len() > MAX_PRIVATE_KEY_BYTES {
             return Err(PairingStoreError::InvalidRecord("server private key size"));
         }
-        let record = format!("{SERVER_MAGIC}\n{}\n{}\n", hex(certificate_der), hex(private_key_pkcs8_der));
+        let record = Zeroizing::new(format!("{SERVER_MAGIC}\n{}\n{}\n", hex(certificate_der), hex(private_key_pkcs8_der)));
         atomic_write(&self.root.join(SERVER_FILE), record.as_bytes())
     }
 
     pub fn load_server_identity(&self) -> Result<Option<StoredServerIdentity>, PairingStoreError> {
         let path = self.root.join(SERVER_FILE);
         let Some(bytes) = read_private_file(&path, MAX_RECORD_BYTES)? else { return Ok(None); };
+        let bytes = Zeroizing::new(bytes);
         let record = std::str::from_utf8(&bytes).map_err(|_| PairingStoreError::InvalidRecord("server record is not UTF-8"))?;
         let mut lines = record.lines();
         if lines.next() != Some(SERVER_MAGIC) { return Err(PairingStoreError::InvalidRecord("server record version")); }
         let certificate_der = decode_hex(lines.next().ok_or(PairingStoreError::InvalidRecord("missing server certificate"))?, MAX_CERTIFICATE_BYTES)?;
-        let private_key = decode_hex(lines.next().ok_or(PairingStoreError::InvalidRecord("missing server private key"))?, MAX_PRIVATE_KEY_BYTES)?;
+        let private_key = Zeroizing::new(decode_hex(lines.next().ok_or(PairingStoreError::InvalidRecord("missing server private key"))?, MAX_PRIVATE_KEY_BYTES)?);
         if lines.next().is_some() || certificate_der.is_empty() || private_key.is_empty() {
             return Err(PairingStoreError::InvalidRecord("server record fields"));
         }
-        Ok(Some(StoredServerIdentity { certificate_der, private_key_pkcs8_der: Zeroizing::new(private_key) }))
+        Ok(Some(StoredServerIdentity { certificate_der, private_key_pkcs8_der: private_key }))
     }
 
     /// Persist only a certificate returned after the pairing transaction verified proof.
