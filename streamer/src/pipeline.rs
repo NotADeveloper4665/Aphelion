@@ -283,8 +283,9 @@ mod tests {
     }
 
     #[test]
-    fn builds_and_sends_a_negotiated_encrypted_h264_session() {
+    fn rtsp_setup_ports_feed_the_reserved_encrypted_video_pipeline() {
         use std::net::{IpAddr, Ipv4Addr};
+        use crate::moonlight_session::{MediaTrack, MoonlightMediaPorts, MoonlightRtspSession};
 
         let profile = MoonlightStreamProfile {
             width: 16, height: 16, frames_per_second: 30, bitrate_kbps: 500,
@@ -292,24 +293,55 @@ mod tests {
             moonlight_feature_flags: 0, nvidia_feature_flags: 0,
             encryption_flags: crate::moonlight_sdp::SS_ENC_VIDEO,
         };
-        let source = Frames(VecDeque::from([0x24, 0x8c].map(|fill| CapturedFrame {
-            width: 16, height: 16, received_at: Instant::now(), bgra: vec![fill; 16 * 16 * 4],
-        })));
+        let video_reservation = SoftwareVideoPipeline::<Frames>::reserve_video_ports(IpAddr::V4(Ipv4Addr::LOCALHOST)).unwrap();
+        let advertised_video_ports = video_reservation.ports();
+        let audio_reservation = ReservedUdpPortPair::bind(IpAddr::V4(Ipv4Addr::LOCALHOST)).unwrap();
+        let control_reservation = ReservedUdpPortPair::bind(IpAddr::V4(Ipv4Addr::LOCALHOST)).unwrap();
+        let mut rtsp = MoonlightRtspSession::with_media_ports("stream-1", MoonlightMediaPorts {
+            video: advertised_video_ports,
+            audio: audio_reservation.ports(),
+            control: control_reservation.ports(),
+        });
+
+        let sdp = format!(
+            "v=0\\r\\na=x-nv-video[0].clientViewportWd:16\\r\\na=x-nv-video[0].clientViewportHt:16\\r\\na=x-nv-video[0].maxFPS:30\\r\\na=x-nv-video[0].packetSize:1200\\r\\na=x-nv-vqos[0].bw.maximumBitrateKbps:500\\r\\na=x-nv-vqos[0].bitStreamFormat:0\\r\\n"
+        );
+        let announce_wire = format!(
+            "ANNOUNCE rtsp://host RTSP/1.0\\r\\nCSeq: 1\\r\\nContent-Type: application/sdp\\r\\nContent-Length: {}\\r\\n\\r\\n{}",
+            sdp.len(), sdp,
+        );
+        let announce = crate::rtsp::RtspDecoder::default().push(announce_wire.as_bytes()).unwrap().remove(0);
+        assert_eq!(rtsp.handle(announce).response.status, 200);
         let (receiver, client_rtp) = loop {
             let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
             let port = socket.local_addr().unwrap().port();
             if port % 2 == 0 && port < u16::MAX { break (socket, port); }
         };
         receiver.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        let client_ports = MediaPortPair::new(client_rtp, client_rtp + 1).unwrap();
+        let setup_wire = format!(
+            "SETUP rtsp://host/streamid=video RTSP/1.0\\r\\nCSeq: 2\\r\\nTransport: RTP/AVP/UDP;unicast;client_port={}-{}\\r\\nContent-Length: 0\\r\\n\\r\\n",
+            client_ports.rtp(), client_ports.rtcp(),
+        );
+        let setup = crate::rtsp::RtspDecoder::default().push(setup_wire.as_bytes()).unwrap().remove(0);
+        let setup_result = rtsp.handle(setup);
+        assert_eq!(setup_result.response.status, 200);
+        let transport = &setup_result.response.headers.iter().find(|(name, _)| name == "Transport").unwrap().1;
+        assert!(transport.contains(&format!(
+            "server_port={}-{}", advertised_video_ports.rtp(), advertised_video_ports.rtcp(),
+        )));
+        assert_eq!(rtsp.negotiated_track_ports(MediaTrack::Video).unwrap().client, client_ports);
+
+        let source = Frames(VecDeque::from([0x24, 0x8c].map(|fill| CapturedFrame {
+            width: 16, height: 16, received_at: Instant::now(), bgra: vec![fill; 16 * 16 * 4],
+        })));
         let ciphers = MoonlightLaunchCrypto::from_rikey_hex(&"66".repeat(16)).unwrap()
             .establish_for_profile(false, &profile).unwrap();
-        let (mut pipeline, server_ports) = SoftwareVideoPipeline::from_negotiated_session(
-            source, &profile, ciphers,
-            IpAddr::V4(Ipv4Addr::LOCALHOST), IpAddr::V4(Ipv4Addr::LOCALHOST),
-            MediaPortPair::new(client_rtp, client_rtp + 1).unwrap(), false,
-        ).expect("negotiated session should create its H.264 media path");
-        assert_eq!(server_ports.rtp() % 2, 0);
-        assert_eq!(server_ports.rtcp(), server_ports.rtp() + 1);
+        let (mut pipeline, server_ports) = SoftwareVideoPipeline::from_reserved_session(
+            source, &profile, ciphers, video_reservation,
+            IpAddr::V4(Ipv4Addr::LOCALHOST), client_ports, false,
+        ).expect("RTSP-advertised reservation should create the negotiated video path");
+        assert_eq!(server_ports, advertised_video_ports);
         pipeline.pump_once().unwrap();
         pipeline.pump_once().unwrap();
         pipeline.finish().unwrap();
