@@ -317,7 +317,7 @@ mod tests {
                 width: config.width,
                 height: config.height,
                 received_at: Instant::now(),
-                bgra: vec![fill; 16 * 16 * 4],
+                bgra: vec![fill; 16 * 16 * 4].into(),
             }).unwrap();
         }
         let units = encoder.finish().unwrap();
