@@ -183,6 +183,10 @@ mod tests {
         let args = gstreamer_args(CaptureConfig { node_id: 42, width: 1920, height: 1080, frames_per_second: 60 });
         assert!(args.iter().any(|arg| arg == "path=42"));
         assert!(args.iter().any(|arg| arg == "video/x-raw,format=BGRA,width=1920,height=1080,framerate=60/1"));
+        assert!(args.iter().any(|arg| arg == "max-size-buffers=2"));
+        assert!(args.iter().any(|arg| arg == "max-size-bytes=0"));
+        assert!(args.iter().any(|arg| arg == "max-size-time=0"));
+        assert!(args.iter().any(|arg| arg == "leaky=downstream"));
         assert!(!args.iter().any(|arg| arg.contains("device=")));
     }
 
