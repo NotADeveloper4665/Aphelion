@@ -396,7 +396,8 @@ mod tests {
         let plaintext = client_cipher.decrypt(Nonce::from_slice(&packet[..12]), sealed.as_ref()).unwrap();
         assert_eq!(plaintext.len(), 1200);
         assert_eq!(&plaintext[..2], &[0x90, 96]);
-        assert_eq!(plaintext[11], 0x10); // Moonlight RTP extension profile.
+        assert_eq!(&plaintext[16..20], &[0, 0, 0, 0]); // Initial stream packet index.
+        assert_eq!(&plaintext[20..24], &0_u32.to_le_bytes()); // First frame index.
         let nv_header_start = 16;
         let fec_info = u32::from_le_bytes(
             plaintext[nv_header_start + 12..nv_header_start + 16].try_into().unwrap(),
@@ -404,7 +405,7 @@ mod tests {
         assert_eq!((fec_info >> 12) & 0x3ff, 0, "first transmitted shard is data shard zero");
         assert!((fec_info >> 22) & 0x3ff > 0, "frame advertises at least one data shard");
         assert!(
-            plaintext[crate::moonlight_video::MOONLIGHT_PACKET_HEADER_BYTES..]
+            plaintext[32..]
                 .windows(4).any(|bytes| bytes == [0, 0, 0, 1]),
             "decrypted shard must contain Annex-B H.264 payload",
         );
