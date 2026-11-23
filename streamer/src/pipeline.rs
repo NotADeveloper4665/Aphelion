@@ -99,7 +99,7 @@ impl<S: FrameSource> SoftwareVideoPipeline<S> {
             }
         };
         self.health.captured_frames = self.health.captured_frames.saturating_add(1);
-        self.latest_frame_received_at = Some(frame.frame_received_at);
+        self.latest_frame_received_at = Some(frame.received_at);
         if let Err(error) = self.encoder.submit(&frame) {
             self.health.encoder_failures = self.health.encoder_failures.saturating_add(1);
             return Err(PipelineError::Encoder(error));
@@ -141,7 +141,7 @@ impl<S: FrameSource> SoftwareVideoPipeline<S> {
     }
 
     fn send(&mut self, unit: EncodedAccessUnit) -> Result<PipelineStep, PipelineError> {
-        let frame_received_at = unit.frame_received_at.ok_or(PipelineError::MissingCaptureTimestamp)?;
+        let frame_received_at = unit.received_at.ok_or(PipelineError::MissingCaptureTimestamp)?;
         let frame_index = self.next_frame_index;
         let stats = match send_unit(&mut self.sender, self.stream_epoch, frame_index, unit) {
             Ok(stats) => stats,
@@ -175,7 +175,7 @@ fn send_unit(
     frame_index: u32,
     unit: EncodedAccessUnit,
 ) -> Result<MoonlightSendStats, PipelineError> {
-    let frame_received_at = unit.frame_received_at.ok_or(PipelineError::MissingCaptureTimestamp)?;
+    let frame_received_at = unit.received_at.ok_or(PipelineError::MissingCaptureTimestamp)?;
     let elapsed = frame_received_at.saturating_duration_since(stream_epoch);
     let timestamp_90khz = (elapsed.as_nanos().saturating_mul(90_000) / 1_000_000_000) as u32;
     let processing_latency = Instant::now().saturating_duration_since(frame_received_at);
@@ -212,7 +212,7 @@ mod tests {
         let source = Frames(VecDeque::from([0x20, 0x90].map(|fill| CapturedFrame {
             width: config.width,
             height: config.height,
-            frame_received_at: Instant::now(),
+            received_at: Instant::now(),
             bgra: vec![fill; 16 * 16 * 4],
         })));
         let encoder = FfmpegH264Encoder::spawn(config).expect("CI installs FFmpeg with libx264");
