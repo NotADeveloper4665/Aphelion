@@ -21,14 +21,18 @@ impl PairingEndpointRequest {
     /// Parse a GameStream /pair query. Unknown metadata parameters are ignored.
     pub fn parse_query(query: &str) -> Result<Self, PairingEndpointError> {
         if query.len() > MAX_QUERY_BYTES { return Err(PairingEndpointError::QueryTooLarge); }
+        let parameters = crate::http::parse_query(query.trim_start_matches('?')).map_err(|error| match error {
+            crate::http::QueryError::TooManyParameters => PairingEndpointError::QueryTooLarge,
+            crate::http::QueryError::DuplicateParameter => PairingEndpointError::DuplicateParameter,
+            crate::http::QueryError::MalformedEscape
+            | crate::http::QueryError::InvalidUtf8
+            | crate::http::QueryError::InvalidControl => PairingEndpointError::MalformedQuery,
+        })?;
         let mut phrase = None;
         let mut payloads = Vec::new();
-        let mut seen = std::collections::HashSet::new();
-        for pair in query.trim_start_matches('?').split('&').filter(|part| !part.is_empty()) {
-            let (name, value) = pair.split_once('=').ok_or(PairingEndpointError::MalformedQuery)?;
-            if !seen.insert(name) { return Err(PairingEndpointError::DuplicateParameter); }
-            match name {
-                "phrase" => phrase = Some(match value {
+        for (name, value) in &parameters {
+            match name.as_str() {
+                "phrase" => phrase = Some(match value.as_str() {
                     "getservercert" => PairingPhrase::GetServerCert,
                     "pairchallenge" => PairingPhrase::PairChallenge,
                     "clientchallenge" => PairingPhrase::ClientChallenge,
@@ -36,7 +40,7 @@ impl PairingEndpointRequest {
                     "clientpairingsecret" => PairingPhrase::ClientPairingSecret,
                     _ => return Err(PairingEndpointError::UnknownPhrase),
                 }),
-                "clientchallenge" | "serverchallengeresp" | "clientpairingsecret" => payloads.push((name, value)),
+                "clientchallenge" | "serverchallengeresp" | "clientpairingsecret" => payloads.push((name.as_str(), value.as_str())),
                 _ => {}
             }
         }
