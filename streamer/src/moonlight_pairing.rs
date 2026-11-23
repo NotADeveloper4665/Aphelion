@@ -369,7 +369,7 @@ mod tests {
     const CLIENT_CERT: &[u8] = include_bytes!("../tests/fixtures/client-cert.der");
     const CLIENT_KEY: &[u8] = include_bytes!("../tests/fixtures/client-key.der");
 
-    fn transaction() -> MoonlightPairingTransaction {
+    fn make_transaction() -> MoonlightPairingTransaction {
         MoonlightPairingTransaction::new(
             &[0x33; 16],
             "0427",
@@ -385,7 +385,7 @@ mod tests {
     fn completes_the_four_authenticated_pairing_phases() {
         let salt = [0x33; 16];
         let pin_key = MoonlightPairingKey::from_pin(&salt, "0427").unwrap();
-        let mut transaction = transaction();
+        let mut transaction = make_transaction();
         assert_eq!(transaction.phase(), PairingPhase::AwaitingServerCertificate);
         assert_eq!(transaction.get_server_certificate().unwrap(), SERVER_CERT);
 
@@ -437,14 +437,14 @@ mod tests {
 
     #[test]
     fn rejects_out_of_order_and_wrong_client_proofs_without_authorizing() {
-        let mut transaction = transaction();
+        let mut transaction = make_transaction();
         assert_eq!(
             transaction.client_challenge(&[0; CHALLENGE_BYTES]),
             Err(PairingError::UnexpectedStage)
         );
         assert_eq!(transaction.phase(), PairingPhase::Failed);
 
-        let mut transaction = transaction();
+        let mut transaction = make_transaction();
         transaction.get_server_certificate().unwrap();
         assert_eq!(transaction.client_challenge(&[0; 15]), Err(PairingError::InvalidChallenge));
         assert_eq!(transaction.phase(), PairingPhase::Failed);
@@ -452,7 +452,7 @@ mod tests {
 
     #[test]
     fn binds_the_operator_pin_to_the_pending_client_identity() {
-        let mut transaction = transaction();
+        let transaction = make_transaction();
         assert_eq!(
             MoonlightPairingTransaction::new(
                 &[0x33; 16], "0427", SERVER_CERT, SERVER_KEY, "client-1", "client 1", CLIENT_CERT
