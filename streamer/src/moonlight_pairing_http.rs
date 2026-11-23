@@ -69,6 +69,11 @@ pub struct PairingEndpointResponse {
     pub paired_client: Option<PairedClient>,
 }
 impl PairingEndpointResponse {
+    /// Moonlight's pairchallenge preflight is an unauthenticated readiness probe.
+    pub fn pair_challenge() -> Self {
+        Self { status_code: 200, xml: response_xml(200, true, None), paired_client: None }
+    }
+
     pub fn handle(transaction: &mut MoonlightPairingTransaction, request: PairingEndpointRequest) -> Self {
         let result: Result<(Option<(&'static str, Vec<u8>)>, Option<PairedClient>), PairingError> =
             match request.phrase {
