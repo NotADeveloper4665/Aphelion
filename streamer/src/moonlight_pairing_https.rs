@@ -140,10 +140,11 @@ fn xml_response(status: HttpStatus, code: u16, message: &str) -> HttpResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{fs, net::{TcpListener, TcpStream}, path::PathBuf, time::{SystemTime, UNIX_EPOCH}};
+    use std::{fs, path::PathBuf, sync::Arc, thread, time::{Duration, SystemTime, UNIX_EPOCH}};
 
     const SERVER_CERT: &[u8] = include_bytes!("../tests/fixtures/server-cert.der");
     const SERVER_KEY: &[u8] = include_bytes!("../tests/fixtures/server-key.der");
+    const CLIENT_CERT: &[u8] = include_bytes!("../tests/fixtures/client-cert.der");
 
     struct TestDir(PathBuf);
     impl TestDir {
@@ -155,15 +156,34 @@ mod tests {
     impl Drop for TestDir { fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); } }
 
     #[test]
-    fn approval_is_visible_to_local_ui_without_disclosing_client_certificate() {
+    fn local_approval_unblocks_the_held_pairing_http_response() {
         let dir = TestDir::new();
         let store = crate::moonlight_pairing_store::MoonlightPairingStore::open(&dir.0).unwrap();
         store.save_server_identity(SERVER_CERT, SERVER_KEY).unwrap();
         let coordinator = MoonlightPairingCoordinator::open(store).unwrap();
-        let service = MoonlightPairingHttpsService::bind("127.0.0.1:0", coordinator).unwrap();
+        let service = Arc::new(MoonlightPairingHttpsService::bind("127.0.0.1:0", coordinator).unwrap());
+        assert_ne!(service.local_addr().unwrap().port(), 0);
+
+        fn hex(bytes: &[u8]) -> String { bytes.iter().map(|byte| format!("{byte:02X}")).collect() }
+        let query = format!("GET /pair?phrase=getservercert&uniqueid=phone&devicename=Pixel+9a&salt={}&clientcert={} HTTP/1.1\r\nHost: localhost\r\n\r\n",
+            hex(&[0x44; 16]), hex(CLIENT_CERT));
+        let mut decoder = crate::http::HttpRequestDecoder::new();
+        let request = decoder.push(query.as_bytes()).unwrap().unwrap();
+        let serving = service.clone();
+        let request_task = thread::spawn(move || serving.route(request));
+
+        let pending = (0..100).find_map(|_| {
+            let requests = service.pending_requests().unwrap();
+            if requests.is_empty() { thread::sleep(Duration::from_millis(5)); None } else { requests.into_iter().next() }
+        }).expect("local UI should observe the pending client");
+        assert_eq!(pending.client_id, "phone");
+        assert_eq!(pending.client_name, "Pixel 9a");
+        service.approve(&pending.approval_id, "0427").unwrap();
+        let response = request_task.join().unwrap();
+        assert_eq!(response.status, HttpStatus::Ok);
+        let xml = String::from_utf8(response.body).unwrap();
+        assert!(xml.contains(&hex(SERVER_CERT)));
         assert!(service.pending_requests().unwrap().is_empty());
-        assert!(TcpListener::bind(service.local_addr().unwrap()).is_err());
-        let _unused_client_socket = TcpStream::connect(service.local_addr().unwrap()).unwrap();
     }
 
     #[test]
