@@ -210,7 +210,7 @@ mod tests {
         let server_name = ServerName::try_from("localhost").unwrap().to_owned();
         let connection = ClientConnection::new(Arc::new(client_config), server_name).unwrap();
         let mut stream = StreamOwned::new(connection, socket);
-        stream.write_all(b"GET /serverinfo HTTP/1.1\\r\\nHost: localhost\\r\\n\\r\\n").unwrap();
+        stream.write_all(b"GET /serverinfo HTTP/1.1\r\nHost: localhost\r\n\r\n").unwrap();
         stream.flush().unwrap();
 
         let mut response = Vec::new();
