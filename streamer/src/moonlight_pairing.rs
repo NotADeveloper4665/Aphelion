@@ -455,7 +455,7 @@ mod tests {
         assert_eq!(paired.client_name, "Moonlight test client");
         assert_eq!(paired.certificate_der, CLIENT_CERT);
         assert_eq!(transaction.phase(), PairingPhase::Paired);
-        assert_eq!(transaction.client_pairing_secret(&client_pairing_secret).unwrap(), paired);
+        assert!(transaction.client_pairing_secret(&client_pairing_secret).unwrap() == paired);
         let mut conflicting_proof = client_pairing_secret.clone();
         conflicting_proof[0] ^= 1;
         assert!(matches!(
