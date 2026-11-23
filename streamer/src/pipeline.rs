@@ -260,7 +260,7 @@ mod tests {
     }
 
     #[test]
-    fn builds_and_sends_an_authenticated_negotiated_h264_session() {
+    fn builds_and_sends_a_negotiated_encrypted_h264_session() {
         use std::net::{IpAddr, Ipv4Addr};
 
         let profile = MoonlightStreamProfile {
