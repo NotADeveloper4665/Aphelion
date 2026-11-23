@@ -8,6 +8,7 @@
 use std::{
     io::{self, Read},
     process::{Child, ChildStdout, Command, Stdio},
+    sync::{Arc, Condvar, Mutex},
     time::Instant,
 };
 
