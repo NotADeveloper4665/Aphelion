@@ -12,7 +12,7 @@ pub enum PairingEndpointError {
     UnknownPhrase, MissingPayload, UnexpectedPayload, InvalidHex, PayloadTooLarge,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PairingPhrase { GetServerCert, ClientChallenge, ServerChallengeResponse, ClientPairingSecret }
+enum PairingPhrase { GetServerCert, PairChallenge, ClientChallenge, ServerChallengeResponse, ClientPairingSecret }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PairingEndpointRequest { phrase: PairingPhrase, payload: Option<Vec<u8>> }
@@ -29,7 +29,7 @@ impl PairingEndpointRequest {
             if !seen.insert(name) { return Err(PairingEndpointError::DuplicateParameter); }
             match name {
                 "phrase" => phrase = Some(match value {
-                    "getservercert" => PairingPhrase::GetServerCert,
+                    "getservercert" => PairingPhrase::GetServerCert,\n                    "pairchallenge" => PairingPhrase::PairChallenge,
                     "clientchallenge" => PairingPhrase::ClientChallenge,
                     "serverchallengeresp" => PairingPhrase::ServerChallengeResponse,
                     "clientpairingsecret" => PairingPhrase::ClientPairingSecret,
@@ -67,7 +67,7 @@ impl PairingEndpointResponse {
     pub fn handle(transaction: &mut MoonlightPairingTransaction, request: PairingEndpointRequest) -> Self {
         let result: Result<(Option<(&'static str, Vec<u8>)>, Option<PairedClient>), PairingError> =
             match request.phrase {
-                PairingPhrase::GetServerCert => transaction.get_server_certificate().map(|cert| (Some(("plaincert", cert)), None)),
+                PairingPhrase::GetServerCert => transaction.get_server_certificate().map(|cert| (Some(("plaincert", cert)), None)),\n                PairingPhrase::PairChallenge => Ok((None, None)),
                 PairingPhrase::ClientChallenge => transaction.client_challenge(request.payload.as_deref().expect("parser enforces payload"))
                     .map(|value| (Some(("challengeresponse", value)), None)),
                 PairingPhrase::ServerChallengeResponse => transaction.server_challenge_response(request.payload.as_deref().expect("parser enforces payload"))
@@ -122,7 +122,7 @@ mod tests {
     fn parses_all_pairing_stages_and_payload_hex() {
         assert_eq!(PairingEndpointRequest::parse_query("phrase=getservercert&salt=0011").unwrap(),
             PairingEndpointRequest { phrase: PairingPhrase::GetServerCert, payload: None });
-        assert_eq!(PairingEndpointRequest::parse_query("phrase=clientchallenge&clientchallenge=00aF").unwrap().payload, Some(vec![0, 0xaf]));
+        assert_eq!(PairingEndpointRequest::parse_query("phrase=pairchallenge").unwrap().phrase, PairingPhrase::PairChallenge);\n        assert_eq!(PairingEndpointRequest::parse_query("phrase=clientchallenge&clientchallenge=00aF").unwrap().payload, Some(vec![0, 0xaf]));
         assert_eq!(PairingEndpointRequest::parse_query("?phrase=serverchallengeresp&serverchallengeresp=0102").unwrap().payload, Some(vec![1, 2]));
         assert_eq!(PairingEndpointRequest::parse_query("phrase=clientpairingsecret&clientpairingsecret=ff").unwrap().payload, Some(vec![255]));
     }
