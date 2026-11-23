@@ -88,7 +88,7 @@ impl MoonlightVideoConfig {
     pub fn apply_session_profile(mut self, profile: &MoonlightStreamProfile, multi_fec_supported: bool) -> Result<Self, MoonlightPacketError> {
         if profile.codec != VideoCodec::H264 { return Err(MoonlightPacketError::UnsupportedCodec); }
         self.minimum_fec_packets = u8::try_from(profile.minimum_fec_packets).map_err(|_| MoonlightPacketError::FecBlockTooLarge)?;
-        self.encryption_required = profile.encryption_flags != 0;
+        self.encryption_required = profile.video_encryption_enabled();
         self.multi_fec_supported = multi_fec_supported;
         Ok(self)
     }
@@ -470,12 +470,19 @@ mod tests {
         let profile = MoonlightStreamProfile {
             width: 1920, height: 1080, frames_per_second: 60, bitrate_kbps: 30_000,
             packet_size: 1200, codec: VideoCodec::H264, minimum_fec_packets: 1,
-            moonlight_feature_flags: 0, nvidia_feature_flags: 135, encryption_flags: 1,
+            moonlight_feature_flags: 0, nvidia_feature_flags: 135, encryption_flags: crate::moonlight_sdp::SS_ENC_VIDEO,
         };
         let config = MoonlightVideoConfig { shard_size: 64, ..MoonlightVideoConfig::default() }
             .apply_session_profile(&profile, false).unwrap();
         assert!(config.encryption_required);
         assert_eq!(config.minimum_fec_packets, 1);
+
+        let control_only = MoonlightStreamProfile {
+            encryption_flags: crate::moonlight_sdp::SS_ENC_CONTROL_V2 | crate::moonlight_sdp::SS_ENC_AUDIO,
+            ..profile.clone()
+        };
+        let control_config = MoonlightVideoConfig::default().apply_session_profile(&control_only, false).unwrap();
+        assert!(!control_config.encryption_required, "control/audio encryption bits do not select video encryption");
 
         let mut packetizer = MoonlightVideoPacketizer::new(config).unwrap();
         assert_eq!(packetizer.packetize(1, 0, false, 0, &[&[0x41, 1]], None).unwrap_err(), MoonlightPacketError::EncryptionRequired);
