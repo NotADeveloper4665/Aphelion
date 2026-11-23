@@ -298,6 +298,29 @@ mod tests {
     }
 
     #[test]
+    fn refuses_negotiated_video_encryption_before_encoder_startup_without_a_cipher() {
+        use std::net::{IpAddr, Ipv4Addr};
+
+        let profile = MoonlightStreamProfile {
+            width: 16, height: 16, frames_per_second: 30, bitrate_kbps: 500,
+            packet_size: 1200, codec: VideoCodec::H264, minimum_fec_packets: 0,
+            moonlight_feature_flags: 0, nvidia_feature_flags: 0,
+            encryption_flags: crate::moonlight_sdp::SS_ENC_VIDEO,
+        };
+        let source = Frames(VecDeque::new());
+        let ciphers = crate::moonlight_launch::NegotiatedMoonlightCiphers {
+            rtsp: None,
+            video: None,
+        };
+        let error = SoftwareVideoPipeline::from_negotiated_session(
+            source, &profile, ciphers,
+            IpAddr::V4(Ipv4Addr::LOCALHOST), IpAddr::V4(Ipv4Addr::LOCALHOST),
+            MediaPortPair::new(47998, 47999).unwrap(), false,
+        ).unwrap_err();
+        assert!(error.to_string().contains("requires an established video cipher"));
+    }
+
+    #[test]
     fn sends_launch_encrypted_h264_from_capture_pipeline_over_udp() {
         let config = EncoderConfig { width: 16, height: 16, frames_per_second: 30, bitrate_kbps: 500 };
         let source = Frames(VecDeque::from([0x30, 0xa0].map(|fill| CapturedFrame {
