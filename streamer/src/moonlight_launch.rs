@@ -7,7 +7,7 @@ use crate::{
     moonlight_rtsp_crypto::{MoonlightRtspCipher, RtspCryptoError},
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LaunchCryptoError {
     InvalidKeyEncoding,
     InvalidKeyLength(usize),
