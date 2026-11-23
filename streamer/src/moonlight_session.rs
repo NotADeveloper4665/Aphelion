@@ -7,7 +7,7 @@
 
 use std::{collections::VecDeque, net::{IpAddr, SocketAddr}};
 
-use crate::moonlight_sdp::{parse_moonlight_sdp, MoonlightStreamProfile};
+use crate::moonlight_sdp::{parse_moonlight_sdp, MoonlightStreamProfile, VideoCodec};
 use crate::rtsp::RtspRequest;
 
 const RESPONSE_CACHE: usize = 32;
@@ -194,6 +194,11 @@ impl MoonlightRtspSession {
                 Ok(profile) => profile,
                 Err(_) => return result(request.cseq, 400, "Invalid SDP", SessionEvent::None, false),
             };
+            // The current encoder and packetizer path is H.264 only. Refuse other
+            // negotiated profiles before SETUP instead of promising an unsupported stream.
+            if profile.codec != VideoCodec::H264 {
+                return result(request.cseq, 415, "Unsupported Media Type", SessionEvent::None, false);
+            }
             self.stream_profile = Some(profile);
             self.state = SessionState::Configuring;
             return result(request.cseq, 200, "OK", SessionEvent::Announced, false);
@@ -370,6 +375,21 @@ mod tests {
         assert_eq!(response.response.status, 400);
         assert_eq!(session.state(), SessionState::AwaitingAnnounce);
         assert!(session.stream_profile().is_none());
+    }
+
+    #[test]
+    fn rejects_codecs_without_a_matching_encoder_before_setup() {
+        for codec in [1, 2] {
+            let sdp = String::from_utf8(VALID_SDP.to_vec()).unwrap()
+                .replace("bitStreamFormat:0", &format!("bitStreamFormat:{codec}"));
+            let mut session = MoonlightRtspSession::new(format!("codec-{codec}"));
+            let response = session.handle(parse(
+                "ANNOUNCE", "rtsp://host", 1, "Content-Type: application/sdp\r\n", sdp.as_bytes(),
+            ));
+            assert_eq!(response.response.status, 415);
+            assert_eq!(session.state(), SessionState::AwaitingAnnounce);
+            assert!(session.stream_profile().is_none());
+        }
     }
 
     #[test]
