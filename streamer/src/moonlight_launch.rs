@@ -5,6 +5,7 @@ use zeroize::{Zeroize, Zeroizing};
 use crate::{
     crypto::{CryptoError, MoonlightVideoCipher},
     moonlight_rtsp_crypto::{MoonlightRtspCipher, RtspCryptoError},
+    moonlight_sdp::MoonlightStreamProfile,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,6 +50,15 @@ impl MoonlightLaunchCrypto {
     }
 
     /// Create only the ciphers enabled by launch negotiation, each scoped to this key.
+    /// Follow the encryption flags negotiated in the client's ANNOUNCE SDP.
+    pub fn establish_for_profile(
+        self,
+        encrypted_rtsp: bool,
+        profile: &MoonlightStreamProfile,
+    ) -> Result<NegotiatedMoonlightCiphers, LaunchCryptoError> {
+        self.establish(encrypted_rtsp, profile.video_encryption_enabled())
+    }
+
     pub fn establish(
         self,
         encrypted_rtsp: bool,
