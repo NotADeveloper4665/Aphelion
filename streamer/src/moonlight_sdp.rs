@@ -11,6 +11,9 @@ pub const MAX_SDP_BYTES: usize = 64 * 1024;
 const MAX_SDP_LINES: usize = 1024;
 const ML_FF_FEC_STATUS: u32 = 0x01;
 const ML_FF_SESSION_ID_V1: u32 = 0x02;
+pub const SS_ENC_CONTROL_V2: u32 = 0x01;
+pub const SS_ENC_VIDEO: u32 = 0x02;
+pub const SS_ENC_AUDIO: u32 = 0x04;
 
 const WIDTH: &str = "x-nv-video[0].clientViewportWd";
 const HEIGHT: &str = "x-nv-video[0].clientViewportHt";
@@ -43,6 +46,8 @@ pub struct MoonlightStreamProfile {
 impl MoonlightStreamProfile {
     pub fn supports_session_id_v1(&self) -> bool { self.moonlight_feature_flags & ML_FF_SESSION_ID_V1 != 0 }
     pub fn supports_fec_status(&self) -> bool { self.moonlight_feature_flags & ML_FF_FEC_STATUS != 0 }
+    pub fn video_encryption_enabled(&self) -> bool { self.encryption_flags & SS_ENC_VIDEO != 0 }
+    pub fn encrypted_control_v2_enabled(&self) -> bool { self.encryption_flags & SS_ENC_CONTROL_V2 != 0 }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
