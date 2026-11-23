@@ -21,6 +21,7 @@ pub mod pipeline;
 pub mod moonlight_sdp;
 pub mod rtsp_connection;
 pub mod moonlight_pairing_key;
+pub mod moonlight_pairing_cipher;
 
 const RTP_HEADER_LEN: usize = 12;
 const H264_FU_A_TYPE: u8 = 28;
