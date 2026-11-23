@@ -233,7 +233,9 @@ mod tests {
             let (mut stream, _) = listener.accept().unwrap();
             stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
             let mut session = MoonlightRtspSession::new("encrypted-session");
-            let mut cipher = MoonlightRtspCipher::new(&key).unwrap();
+            let launch = crate::moonlight_launch::MoonlightLaunchCrypto::from_rikey_hex(&"52".repeat(16)).unwrap();
+            let mut ciphers = launch.establish(true, false).unwrap();
+            let mut cipher = ciphers.rtsp.take().unwrap();
             let mut callbacks = Vec::new();
             let result = serve_encrypted_rtsp_connection(
                 &mut stream, &mut session, &mut cipher, |event| callbacks.push(event.clone())
