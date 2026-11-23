@@ -193,10 +193,23 @@ mod tests {
     #[cfg(unix)]
     fn fixture_program(script: &str) -> String {
         use std::os::unix::fs::PermissionsExt;
+        use std::io::Write;
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!("aphelion-capture-fixture-{}-{id}.sh", std::process::id()));
-        std::fs::write(&path, format!("#!/bin/sh\n{script}\n")).unwrap();
+        let script_contents = format!("#!/bin/sh\n{script}\n");
+        let path = loop {
+            let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+            let candidate = std::env::temp_dir().join(format!("aphelion-capture-fixture-{}-{now}-{id}.sh", std::process::id()));
+            match std::fs::OpenOptions::new().write(true).create_new(true).open(&candidate) {
+                Ok(mut file) => {
+                    file.write_all(script_contents.as_bytes()).unwrap();
+                    drop(file);
+                    break candidate;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => panic!("cannot create capture fixture: {error}"),
+            }
+        };
         let mut permissions = std::fs::metadata(&path).unwrap().permissions();
         permissions.set_mode(0o755);
         std::fs::set_permissions(&path, permissions).unwrap();
