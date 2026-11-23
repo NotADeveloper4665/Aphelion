@@ -17,3 +17,4 @@ x509-parser = "=0.17.0"
 reed-solomon-erasure = "=6.0.0"
 sha2 = "=0.10.9"
 zeroize = "=1.8.2"
+rustls = { version = "=0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
