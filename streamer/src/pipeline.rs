@@ -361,7 +361,7 @@ mod tests {
         let premature = SoftwareVideoPipeline::from_rtsp_session(
             Frames(VecDeque::new()), &rtsp, premature_ciphers, premature_ports,
             IpAddr::V4(Ipv4Addr::LOCALHOST), false,
-        ).expect_err("media must not start before PLAY");
+        ).err().expect("media must not start before PLAY");
         assert!(premature.to_string().contains("PLAY"));
 
         let source = Frames(VecDeque::from([0x24, 0x8c].map(|fill| CapturedFrame {
