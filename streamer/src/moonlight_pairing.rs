@@ -466,6 +466,62 @@ mod tests {
     }
 
     #[test]
+    fn pairing_http_adapter_runs_four_stages_and_releases_client_only_at_completion() {
+        use crate::moonlight_pairing_http::{PairingEndpointRequest, PairingEndpointResponse};
+
+        fn hex(bytes: &[u8]) -> String {
+            bytes.iter().map(|byte| format!("{byte:02X}")).collect()
+        }
+        fn field(xml: &str, name: &str) -> Vec<u8> {
+            let start = xml.find(&format!("<{name}>")).unwrap() + name.len() + 2;
+            let end = xml.find(&format!("</{name}>")).unwrap();
+            let encoded = &xml[start..end];
+            encoded.as_bytes().chunks_exact(2).map(|pair| {
+                u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap()
+            }).collect()
+        }
+        let key = MoonlightPairingKey::from_pin(&[0x33; 16], "0427").unwrap();
+        let mut transaction = make_transaction();
+
+        let cert = PairingEndpointResponse::handle(&mut transaction,
+            PairingEndpointRequest::parse_query("phrase=getservercert&salt=ignored").unwrap());
+        assert_eq!(cert.status_code, 200);
+        assert!(cert.xml.contains(&hex(SERVER_CERT)));
+        assert!(cert.paired_client.is_none());
+
+        let client_challenge = [0x45; CHALLENGE_BYTES];
+        let encrypted = encrypt_pairing_blocks(key.expose_for_crypto(), &client_challenge).unwrap();
+        let query = format!("phrase=clientchallenge&clientchallenge={}", hex(&encrypted));
+        let challenge = PairingEndpointResponse::handle(&mut transaction, PairingEndpointRequest::parse_query(&query).unwrap());
+        assert!(challenge.paired_client.is_none());
+        let challenge_response = decrypt_pairing_blocks(key.expose_for_crypto(), &field(&challenge.xml, "challengeresponse")).unwrap();
+        let server_challenge: [u8; CHALLENGE_BYTES] = challenge_response[HASH_BYTES..].try_into().unwrap();
+
+        let client_secret = [0x7a; CHALLENGE_BYTES];
+        let (_, client_cert_signature) = parse_certificate(CLIENT_CERT).unwrap();
+        let mut transcript = Vec::new();
+        transcript.extend_from_slice(&server_challenge);
+        transcript.extend_from_slice(&client_cert_signature);
+        transcript.extend_from_slice(&client_secret);
+        let encrypted_hash = encrypt_pairing_blocks(key.expose_for_crypto(), &Sha256::digest(transcript)).unwrap();
+        let query = format!("phrase=serverchallengeresp&serverchallengeresp={}", hex(&encrypted_hash));
+        let server_response = PairingEndpointResponse::handle(&mut transaction, PairingEndpointRequest::parse_query(&query).unwrap());
+        assert!(server_response.xml.contains("<pairingsecret>"));
+        assert!(server_response.paired_client.is_none());
+
+        let client_signer = SigningKey::<Sha256>::new(RsaPrivateKey::from_pkcs8_der(CLIENT_KEY).unwrap());
+        let signature = client_signer.sign(&client_secret);
+        let mut proof = client_secret.to_vec();
+        proof.extend_from_slice(&signature.to_bytes());
+        let query = format!("phrase=clientpairingsecret&clientpairingsecret={}", hex(&proof));
+        let final_response = PairingEndpointResponse::handle(&mut transaction, PairingEndpointRequest::parse_query(&query).unwrap());
+        assert_eq!(final_response.status_code, 200);
+        let paired = final_response.paired_client.unwrap();
+        assert_eq!(paired.client_id, "client-uuid");
+        assert_eq!(paired.certificate_der, CLIENT_CERT);
+    }
+
+    #[test]
     fn rejects_out_of_order_and_wrong_client_proofs_without_authorizing() {
         let mut transaction = make_transaction();
         assert_eq!(
