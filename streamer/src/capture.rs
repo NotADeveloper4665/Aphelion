@@ -40,14 +40,14 @@ impl CaptureConfig {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct CapturedFrame {
     pub width: u32,
     pub height: u32,
     /// Monotonic time at which this process received the complete frame.
     pub received_at: Instant,
     /// BGRA8, tightly packed, row-major pixels.
-    pub bgra: Vec<u8>,
+    pub bgra: Arc<[u8]>,
 }
 
 #[derive(Debug)]
@@ -56,6 +56,8 @@ pub enum CaptureError {
     Spawn(io::Error),
     MissingPipe,
     ProcessExited(Option<i32>),
+    SharedSourceClosed,
+    FrameSequenceExhausted,
     TruncatedFrame { expected: usize, received: usize },
     Read(io::Error),
 }
@@ -67,6 +69,8 @@ impl std::fmt::Display for CaptureError {
             Self::Spawn(error) => write!(f, "cannot start GStreamer PipeWire capture: {error}"),
             Self::MissingPipe => f.write_str("GStreamer capture process did not expose its frame pipe"),
             Self::ProcessExited(code) => write!(f, "GStreamer capture process exited with status {code:?}"),
+            Self::SharedSourceClosed => f.write_str("shared capture source has closed"),
+            Self::FrameSequenceExhausted => f.write_str("shared capture frame sequence exhausted"),
             Self::TruncatedFrame { expected, received } => write!(f, "capture pipe closed mid-frame ({received}/{expected} bytes)"),
             Self::Read(error) => write!(f, "cannot read captured frame: {error}"),
         }
@@ -78,6 +82,73 @@ impl std::error::Error for CaptureError {}
 /// A synchronous, fixed-format frame source. Run it on a dedicated media thread.
 pub trait FrameSource {
     fn next_frame(&mut self) -> Result<CapturedFrame, CaptureError>;
+}
+
+/// Latest-frame fan-out for one capture owner and multiple per-session consumers.
+///
+/// The hub retains only one frame. A slow subscriber skips stale frames instead of
+/// building a queue; subscribers share the same pixel allocation through Arc.
+#[derive(Clone, Default)]
+pub struct LatestFrameHub {
+    shared: Arc<(Mutex<LatestFrameState>, Condvar)>,
+}
+
+#[derive(Default)]
+struct LatestFrameState {
+    sequence: u64,
+    latest: Option<Arc<CapturedFrame>>,
+    closed: bool,
+}
+
+pub struct LatestFrameSubscription {
+    shared: Arc<(Mutex<LatestFrameState>, Condvar)>,
+    seen_sequence: u64,
+}
+
+impl LatestFrameHub {
+    pub fn new() -> Self { Self::default() }
+
+    /// Publish a capture result to all sessions, replacing the retained frame.
+    pub fn publish(&self, frame: CapturedFrame) -> Result<(), CaptureError> {
+        let (state_lock, ready) = &*self.shared;
+        let mut state = state_lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state.closed { return Err(CaptureError::SharedSourceClosed); }
+        state.sequence = state.sequence.checked_add(1).ok_or(CaptureError::FrameSequenceExhausted)?;
+        state.latest = Some(Arc::new(frame));
+        ready.notify_all();
+        Ok(())
+    }
+
+    /// Subscribe for future frames. Each subscriber has its own sequence cursor.
+    pub fn subscribe(&self) -> LatestFrameSubscription {
+        let (state_lock, _) = &*self.shared;
+        let state = state_lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        LatestFrameSubscription { shared: Arc::clone(&self.shared), seen_sequence: state.sequence }
+    }
+
+    /// Wake all consumers and make further reads return a closed-source error.
+    pub fn close(&self) {
+        let (state_lock, ready) = &*self.shared;
+        let mut state = state_lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.closed = true;
+        ready.notify_all();
+    }
+}
+
+impl FrameSource for LatestFrameSubscription {
+    fn next_frame(&mut self) -> Result<CapturedFrame, CaptureError> {
+        let (state_lock, ready) = &*self.shared;
+        let mut state = state_lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        loop {
+            if state.sequence > self.seen_sequence {
+                let frame = state.latest.as_ref().expect("published sequence always has a frame");
+                self.seen_sequence = state.sequence;
+                return Ok(frame.as_ref().clone());
+            }
+            if state.closed { return Err(CaptureError::SharedSourceClosed); }
+            state = ready.wait(state).unwrap_or_else(|poisoned| poisoned.into_inner());
+        }
+    }
 }
 
 /// Captures BGRA frames from a portal-authorized PipeWire node using GStreamer.
@@ -132,7 +203,7 @@ impl FrameSource for PipeWireCapture {
                 Err(error) => return Err(CaptureError::Read(error)),
             }
         }
-        Ok(CapturedFrame { width: self.config.width, height: self.config.height, received_at: Instant::now(), bgra })
+        Ok(CapturedFrame { width: self.config.width, height: self.config.height, received_at: Instant::now(), bgra: bgra.into() })
     }
 }
 
@@ -190,6 +261,39 @@ mod tests {
         assert!(!args.iter().any(|arg| arg.contains("device=")));
     }
 
+    fn frame(fill: u8) -> CapturedFrame {
+        CapturedFrame {
+            width: 2,
+            height: 2,
+            received_at: Instant::now(),
+            bgra: vec![fill; 16].into(),
+        }
+    }
+
+    #[test]
+    fn capture_hub_fans_out_shared_frames_and_drops_stale_frames() {
+        let hub = LatestFrameHub::new();
+        let mut first = hub.subscribe();
+        let mut second = hub.subscribe();
+
+        hub.publish(frame(1)).unwrap();
+        hub.publish(frame(2)).unwrap();
+
+        let first_frame = first.next_frame().unwrap();
+        let second_frame = second.next_frame().unwrap();
+        assert_eq!(first_frame.bgra.as_ref(), &[2; 16]);
+        assert!(Arc::ptr_eq(&first_frame.bgra, &second_frame.bgra));
+    }
+
+    #[test]
+    fn capture_hub_close_unblocks_future_reads_and_rejects_publish() {
+        let hub = LatestFrameHub::new();
+        let mut subscriber = hub.subscribe();
+        hub.close();
+        assert!(matches!(subscriber.next_frame(), Err(CaptureError::SharedSourceClosed)));
+        assert!(matches!(hub.publish(frame(3)), Err(CaptureError::SharedSourceClosed)));
+    }
+
     #[cfg(unix)]
     fn fixture_program(script: &str) -> String {
         use std::os::unix::fs::PermissionsExt;
@@ -223,7 +327,7 @@ mod tests {
         let complete_program = fixture_program("printf ABCD");
         let mut capture = PipeWireCapture::spawn_with_program(config, &complete_program).unwrap();
         let frame = capture.next_frame().unwrap();
-        assert_eq!(frame.bgra.as_slice(), b"ABCD");
+        assert_eq!(frame.bgra.as_ref(), b"ABCD");
         assert_eq!((frame.width, frame.height), (1, 1));
         let _ = capture.stop();
         std::fs::remove_file(complete_program).unwrap();
