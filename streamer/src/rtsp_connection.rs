@@ -49,6 +49,15 @@ pub fn serve_rtsp_connection(
     session: &mut MoonlightRtspSession,
     mut on_event: impl FnMut(&SessionEvent),
 ) -> Result<Vec<SessionEvent>, RtspConnectionError> {
+    serve_rtsp_connection_with_session_callback(stream, session, |event, _session| on_event(event))
+}
+
+/// Session-aware callback version for media lifecycle integration.
+pub fn serve_rtsp_connection_with_session_callback(
+    stream: &mut TcpStream,
+    session: &mut MoonlightRtspSession,
+    mut on_event: impl FnMut(&SessionEvent, &mut MoonlightRtspSession),
+) -> Result<Vec<SessionEvent>, RtspConnectionError> {
     let mut decoder = RtspDecoder::default();
     let mut input = [0; READ_CHUNK_BYTES];
     let mut events = Vec::new();
@@ -59,7 +68,7 @@ pub fn serve_rtsp_connection(
                 let buffered = decoder.buffered_bytes();
                 if buffered != 0 { return Err(RtspConnectionError::TruncatedMessage(buffered)); }
                 if session.state() != SessionState::AwaitingAnnounce && session.state() != SessionState::Closed {
-                    on_event(&SessionEvent::ControlDisconnected);
+                    on_event(&SessionEvent::ControlDisconnected, session);
                     events.push(SessionEvent::ControlDisconnected);
                 }
                 return Ok(events);
@@ -74,7 +83,7 @@ pub fn serve_rtsp_connection(
             let result = session.handle(request);
             stream.write_all(&result.response.encode()).map_err(RtspConnectionError::Io)?;
             if !result.replayed && result.event != SessionEvent::None {
-                on_event(&result.event);
+                on_event(&result.event, session);
                 events.push(result.event);
             }
             if session.state() == SessionState::Closed {
@@ -97,6 +106,16 @@ pub fn serve_encrypted_rtsp_connection(
     cipher: &mut MoonlightRtspCipher,
     mut on_event: impl FnMut(&SessionEvent),
 ) -> Result<Vec<SessionEvent>, RtspConnectionError> {
+    serve_encrypted_rtsp_connection_with_session_callback(stream, session, cipher, |event, _session| on_event(event))
+}
+
+/// Session-aware callback version for media lifecycle integration.
+pub fn serve_encrypted_rtsp_connection_with_session_callback(
+    stream: &mut TcpStream,
+    session: &mut MoonlightRtspSession,
+    cipher: &mut MoonlightRtspCipher,
+    mut on_event: impl FnMut(&SessionEvent, &mut MoonlightRtspSession),
+) -> Result<Vec<SessionEvent>, RtspConnectionError> {
     const HEADER_BYTES: usize = 24;
     let mut events = Vec::new();
     loop {
@@ -104,7 +123,7 @@ pub fn serve_encrypted_rtsp_connection(
         match stream.read(&mut header[..1]) {
             Ok(0) => {
                 if session.state() != SessionState::AwaitingAnnounce && session.state() != SessionState::Closed {
-                    on_event(&SessionEvent::ControlDisconnected);
+                    on_event(&SessionEvent::ControlDisconnected, session);
                     events.push(SessionEvent::ControlDisconnected);
                 }
                 return Ok(events);
@@ -144,7 +163,7 @@ pub fn serve_encrypted_rtsp_connection(
         let encrypted_response = cipher.seal_host_record(&result.response.encode()).map_err(RtspConnectionError::Crypto)?;
         stream.write_all(&encrypted_response).map_err(RtspConnectionError::Io)?;
         if !result.replayed && result.event != SessionEvent::None {
-            on_event(&result.event);
+            on_event(&result.event, session);
             events.push(result.event);
         }
         if session.state() == SessionState::Closed {
