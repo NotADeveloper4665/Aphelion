@@ -73,7 +73,7 @@ pub fn serve_rtsp_connection(
         for request in requests {
             let result = session.handle(request);
             stream.write_all(&result.response.encode()).map_err(RtspConnectionError::Io)?;
-            if result.event != SessionEvent::None {
+            if !result.replayed && result.event != SessionEvent::None {
                 on_event(&result.event);
                 events.push(result.event);
             }
@@ -143,7 +143,7 @@ pub fn serve_encrypted_rtsp_connection(
         let result = session.handle(request);
         let encrypted_response = cipher.seal_host_record(&result.response.encode()).map_err(RtspConnectionError::Crypto)?;
         stream.write_all(&encrypted_response).map_err(RtspConnectionError::Io)?;
-        if result.event != SessionEvent::None {
+        if !result.replayed && result.event != SessionEvent::None {
             on_event(&result.event);
             events.push(result.event);
         }
@@ -156,12 +156,50 @@ pub fn serve_encrypted_rtsp_connection(
 #[cfg(test)]
 mod tests {
     use std::{net::TcpListener, thread, time::Duration};
+    use aes_gcm::{aead::{Aead, KeyInit}, Aes128Gcm, Nonce};
 
     use crate::{
         moonlight_session::{MediaPortPair, MoonlightMediaPorts},
     };
 
     use super::*;
+
+    fn client_encrypted_record(key: &[u8; 16], sequence: u32, plaintext: &[u8]) -> Vec<u8> {
+        let mut nonce = [0_u8; 12];
+        nonce[..4].copy_from_slice(&sequence.to_be_bytes());
+        nonce[10] = b'C';
+        nonce[11] = b'R';
+        let cipher = Aes128Gcm::new_from_slice(key).unwrap();
+        let sealed = cipher.encrypt(Nonce::from_slice(&nonce), plaintext).unwrap();
+        let split = sealed.len() - 16;
+        let mut record = Vec::new();
+        record.extend_from_slice(&(0x8000_0000_u32 | plaintext.len() as u32).to_be_bytes());
+        record.extend_from_slice(&sequence.to_be_bytes());
+        record.extend_from_slice(&sealed[split..]);
+        record.extend_from_slice(&sealed[..split]);
+        record
+    }
+
+    fn read_encrypted_response(stream: &mut TcpStream) -> Vec<u8> {
+        let mut record = vec![0_u8; 24];
+        stream.read_exact(&mut record).unwrap();
+        let payload_len = (u32::from_be_bytes(record[..4].try_into().unwrap()) & 0x7fff_ffff) as usize;
+        record.resize(24 + payload_len, 0);
+        stream.read_exact(&mut record[24..]).unwrap();
+        record
+    }
+
+    fn decrypt_host_record(key: &[u8; 16], record: &[u8]) -> Vec<u8> {
+        let sequence = u32::from_be_bytes(record[4..8].try_into().unwrap());
+        let mut nonce = [0_u8; 12];
+        nonce[..8].copy_from_slice(&(sequence as u64).to_le_bytes());
+        nonce[10] = b'H';
+        nonce[11] = b'R';
+        let mut sealed = record[24..].to_vec();
+        sealed.extend_from_slice(&record[8..24]);
+        Aes128Gcm::new_from_slice(key).unwrap()
+            .decrypt(Nonce::from_slice(&nonce), sealed.as_ref()).unwrap()
+    }
 
     fn request(method: &str, cseq: u32, extra: &str) -> String {
         format!("{method} rtsp://127.0.0.1/session RTSP/1.0\r\nCSeq: {cseq}\r\n{extra}\r\n")
@@ -183,6 +221,45 @@ mod tests {
             if response.len() >= headers_end + 4 + content_length { break }
         }
         String::from_utf8(response).unwrap()
+    }
+
+
+    #[test]
+    fn serves_authenticated_encrypted_rtsp_record_and_disconnect_lifecycle() {
+        let key = [0x52; 16];
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+            let mut session = MoonlightRtspSession::new("encrypted-session");
+            let mut cipher = MoonlightRtspCipher::new(&key).unwrap();
+            let mut callbacks = Vec::new();
+            let result = serve_encrypted_rtsp_connection(
+                &mut stream, &mut session, &mut cipher, |event| callbacks.push(event.clone())
+            );
+            (result.unwrap(), callbacks, session.state())
+        });
+
+        let mut client = TcpStream::connect(address).unwrap();
+        client.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        let sdp = b"v=0\r\ns=Aphelion\r\na=x-nv-video[0].clientViewportWd:1280\r\na=x-nv-video[0].clientViewportHt:720\r\na=x-nv-video[0].maxFPS:60\r\na=x-nv-video[0].packetSize:1200\r\na=x-nv-vqos[0].bw.maximumBitrateKbps:10000\r\na=x-nv-vqos[0].bitStreamFormat:0\r\n";
+        let request = format!(
+            "ANNOUNCE rtsp://127.0.0.1/session RTSP/1.0\r\nCSeq: 1\r\nContent-Type: application/sdp\r\nContent-Length: {}\r\n\r\n",
+            sdp.len()
+        );
+        let mut plaintext = request.into_bytes();
+        plaintext.extend_from_slice(sdp);
+        client.write_all(&client_encrypted_record(&key, 1, &plaintext)).unwrap();
+        let response = decrypt_host_record(&key, &read_encrypted_response(&mut client));
+        let response = String::from_utf8(response).unwrap();
+        assert!(response.starts_with("RTSP/1.0 200 OK\r\nCSeq: 1\r\n"));
+        drop(client);
+
+        let (events, callbacks, state) = server.join().unwrap();
+        assert_eq!(events, vec![SessionEvent::Announced, SessionEvent::ControlDisconnected]);
+        assert_eq!(events, callbacks);
+        assert_eq!(state, SessionState::Configuring);
     }
 
     #[test]
