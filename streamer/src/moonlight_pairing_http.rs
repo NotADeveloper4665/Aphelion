@@ -29,7 +29,8 @@ impl PairingEndpointRequest {
             if !seen.insert(name) { return Err(PairingEndpointError::DuplicateParameter); }
             match name {
                 "phrase" => phrase = Some(match value {
-                    "getservercert" => PairingPhrase::GetServerCert,\n                    "pairchallenge" => PairingPhrase::PairChallenge,
+                    "getservercert" => PairingPhrase::GetServerCert,
+                    "pairchallenge" => PairingPhrase::PairChallenge,
                     "clientchallenge" => PairingPhrase::ClientChallenge,
                     "serverchallengeresp" => PairingPhrase::ServerChallengeResponse,
                     "clientpairingsecret" => PairingPhrase::ClientPairingSecret,
@@ -41,7 +42,7 @@ impl PairingEndpointRequest {
         }
         let phrase = phrase.ok_or(PairingEndpointError::MissingPhrase)?;
         let expected = match phrase {
-            PairingPhrase::GetServerCert => None,
+            PairingPhrase::GetServerCert | PairingPhrase::PairChallenge => None,
             PairingPhrase::ClientChallenge => Some("clientchallenge"),
             PairingPhrase::ServerChallengeResponse => Some("serverchallengeresp"),
             PairingPhrase::ClientPairingSecret => Some("clientpairingsecret"),
@@ -67,7 +68,8 @@ impl PairingEndpointResponse {
     pub fn handle(transaction: &mut MoonlightPairingTransaction, request: PairingEndpointRequest) -> Self {
         let result: Result<(Option<(&'static str, Vec<u8>)>, Option<PairedClient>), PairingError> =
             match request.phrase {
-                PairingPhrase::GetServerCert => transaction.get_server_certificate().map(|cert| (Some(("plaincert", cert)), None)),\n                PairingPhrase::PairChallenge => Ok((None, None)),
+                PairingPhrase::GetServerCert => transaction.get_server_certificate().map(|cert| (Some(("plaincert", cert)), None)),
+                PairingPhrase::PairChallenge => Ok((None, None)),
                 PairingPhrase::ClientChallenge => transaction.client_challenge(request.payload.as_deref().expect("parser enforces payload"))
                     .map(|value| (Some(("challengeresponse", value)), None)),
                 PairingPhrase::ServerChallengeResponse => transaction.server_challenge_response(request.payload.as_deref().expect("parser enforces payload"))
