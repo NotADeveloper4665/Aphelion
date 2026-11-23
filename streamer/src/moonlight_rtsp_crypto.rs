@@ -40,9 +40,10 @@ impl MoonlightRtspCipher {
 
     /// Authenticate/decrypt one complete client record: header, tag, ciphertext.
     pub fn open_client_record(&mut self, record: &[u8]) -> Result<Vec<u8>, RtspCryptoError> {
-        if record.len() < HEADER { return Err(RtspCryptoError::InvalidFrame); }
+        if record.len() < 4 { return Err(RtspCryptoError::InvalidFrame); }
         let tagged_len = u32::from_be_bytes(record[..4].try_into().map_err(|_| RtspCryptoError::InvalidFrame)?);
         if tagged_len & ENCRYPTED == 0 { return Err(RtspCryptoError::CleartextFrame); }
+        if record.len() < HEADER { return Err(RtspCryptoError::InvalidFrame); }
         let length = (tagged_len & !ENCRYPTED) as usize;
         if length == 0 { return Err(RtspCryptoError::InvalidFrame); }
         if length > MAX_RTSP_PLAINTEXT_BYTES { return Err(RtspCryptoError::PayloadTooLarge); }
