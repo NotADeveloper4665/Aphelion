@@ -102,7 +102,7 @@ impl MoonlightPairingCoordinator {
         Ok(Self {
             store,
             server_certificate_der: identity.certificate_der,
-            server_private_key_pkcs8_der: identity.private_key_pkcs8_der().to_vec().into(),
+            server_private_key_pkcs8_der: Zeroizing::new(identity.private_key_pkcs8_der().to_vec()),
             pending: HashMap::new(),
             active: HashMap::new(),
         })
@@ -131,7 +131,7 @@ impl MoonlightPairingCoordinator {
                 paired_client: None,
             }));
         };
-        let mut endpoint = PairingEndpointRequest::parse_query(query)?;
+        let endpoint = PairingEndpointRequest::parse_query(query)?;
         // The transaction is keyed by the uniqueid from this query, so malformed routing
         // parameters can never select a different client's PIN/session state.
         if field(&parameters, "uniqueid") != Some(client_id) {
@@ -285,8 +285,7 @@ mod tests {
         let retry = coordinator.handle_pair_query(&query).unwrap();
         let PairingAction::ApprovalRequired(retry) = retry else { panic!("same request should reuse pending approval"); };
         assert_eq!(retry.approval_id, pending.approval_id);
-        assert_eq!(coordinator.approve(&pending.approval_id, "abcd").unwrap_err().to_string(),
-            PairingCoordinatorError::InvalidPin.to_string());
+        assert!(matches!(coordinator.approve(&pending.approval_id, "abcd"), Err(PairingCoordinatorError::InvalidPin)));
         let mutated = query.replace("devicename=Phone", "devicename=Different");
         assert!(matches!(coordinator.handle_pair_query(&mutated), Err(PairingCoordinatorError::AlreadyInProgress)));
     }
