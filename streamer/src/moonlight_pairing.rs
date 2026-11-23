@@ -524,6 +524,16 @@ mod tests {
         let paired = final_response.paired_client.unwrap();
         assert_eq!(paired.client_id, "client-uuid");
         assert_eq!(paired.certificate_der, CLIENT_CERT);
+
+        let suffix = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let directory = std::env::temp_dir().join(format!("aphelion-paired-proof-{}-{suffix}", std::process::id()));
+        let store = crate::moonlight_pairing_store::MoonlightPairingStore::open(&directory).unwrap();
+        store.authorize_client(&paired).unwrap();
+        let stored = store.load_clients().unwrap();
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].client_id, paired.client_id);
+        assert_eq!(stored[0].certificate_der, CLIENT_CERT);
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
