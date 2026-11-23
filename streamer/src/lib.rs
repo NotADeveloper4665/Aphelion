@@ -313,3 +313,5 @@ mod tests {
         assert_eq!(&packet[4..8], &9000_u32.to_be_bytes());
     }
 }
+
+pub mod moonlight_pairing_http;
