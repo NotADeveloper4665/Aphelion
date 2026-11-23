@@ -9,6 +9,7 @@ use std::net::TcpStream;
 
 use crate::moonlight_session::{MoonlightRtspSession, SessionEvent, SessionState};
 use crate::rtsp::{RtspDecoder, RtspError};
+use crate::moonlight_rtsp_crypto::{MoonlightRtspCipher, RtspCryptoError, MAX_RTSP_PLAINTEXT_BYTES};
 
 const READ_CHUNK_BYTES: usize = 8 * 1024;
 
@@ -17,6 +18,9 @@ pub enum RtspConnectionError {
     Io(io::Error),
     Protocol(RtspError),
     TruncatedMessage(usize),
+    TruncatedEncryptedRecord,
+    InvalidEncryptedPayload,
+    Crypto(RtspCryptoError),
 }
 
 impl std::fmt::Display for RtspConnectionError {
@@ -25,6 +29,9 @@ impl std::fmt::Display for RtspConnectionError {
             Self::Io(error) => write!(f, "RTSP connection I/O failed: {error}"),
             Self::Protocol(error) => write!(f, "invalid RTSP connection: {error}"),
             Self::TruncatedMessage(bytes) => write!(f, "RTSP peer disconnected with {bytes} buffered message bytes"),
+            Self::TruncatedEncryptedRecord => f.write_str("RTSP peer disconnected during an encrypted record"),
+            Self::InvalidEncryptedPayload => f.write_str("encrypted RTSP record must contain exactly one complete request"),
+            Self::Crypto(error) => write!(f, "encrypted RTSP processing failed: {error}"),
         }
     }
 }
@@ -73,6 +80,75 @@ pub fn serve_rtsp_connection(
             if session.state() == SessionState::Closed {
                 return Ok(events);
             }
+        }
+    }
+}
+
+
+/// Serve one already-accepted encrypted RTSP/TCP connection.
+///
+/// The caller selects this adapter only after launch negotiation enabled encrypted RTSP,
+/// supplies the per-launch key/cipher, and sets finite socket timeouts. Every encrypted
+/// record is authenticated before RTSP parsing, lifecycle callbacks run after response
+/// writes, and cleartext records are rejected.
+pub fn serve_encrypted_rtsp_connection(
+    stream: &mut TcpStream,
+    session: &mut MoonlightRtspSession,
+    cipher: &mut MoonlightRtspCipher,
+    mut on_event: impl FnMut(&SessionEvent),
+) -> Result<Vec<SessionEvent>, RtspConnectionError> {
+    const HEADER_BYTES: usize = 24;
+    let mut events = Vec::new();
+    loop {
+        let mut header = [0_u8; HEADER_BYTES];
+        match stream.read(&mut header[..1]) {
+            Ok(0) => {
+                if session.state() != SessionState::AwaitingAnnounce && session.state() != SessionState::Closed {
+                    on_event(&SessionEvent::ControlDisconnected);
+                    events.push(SessionEvent::ControlDisconnected);
+                }
+                return Ok(events);
+            }
+            Ok(1) => {}
+            Ok(_) => unreachable!("one-byte read cannot return more than one byte"),
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(RtspConnectionError::Io(error)),
+        }
+        stream.read_exact(&mut header[1..]).map_err(|_| RtspConnectionError::TruncatedEncryptedRecord)?;
+        let type_and_length = u32::from_be_bytes(header[..4].try_into().map_err(|_| RtspConnectionError::InvalidEncryptedPayload)?);
+        if type_and_length & 0x8000_0000 == 0 {
+            return Err(RtspConnectionError::Crypto(RtspCryptoError::CleartextFrame));
+        }
+        let payload_len = (type_and_length & 0x7fff_ffff) as usize;
+        if payload_len == 0 {
+            return Err(RtspConnectionError::InvalidEncryptedPayload);
+        }
+        if payload_len > MAX_RTSP_PLAINTEXT_BYTES {
+            return Err(RtspConnectionError::Crypto(RtspCryptoError::PayloadTooLarge));
+        }
+
+        let mut record = Vec::with_capacity(HEADER_BYTES + payload_len);
+        record.extend_from_slice(&header);
+        record.resize(HEADER_BYTES + payload_len, 0);
+        stream.read_exact(&mut record[HEADER_BYTES..])
+            .map_err(|_| RtspConnectionError::TruncatedEncryptedRecord)?;
+        let plaintext = cipher.open_client_record(&record).map_err(RtspConnectionError::Crypto)?;
+
+        let mut decoder = RtspDecoder::default();
+        let mut requests = decoder.push(&plaintext).map_err(RtspConnectionError::Protocol)?;
+        if requests.len() != 1 || decoder.buffered_bytes() != 0 {
+            return Err(RtspConnectionError::InvalidEncryptedPayload);
+        }
+        let request = requests.pop().expect("one complete RTSP request checked");
+        let result = session.handle(request);
+        let encrypted_response = cipher.seal_host_record(&result.response.encode()).map_err(RtspConnectionError::Crypto)?;
+        stream.write_all(&encrypted_response).map_err(RtspConnectionError::Io)?;
+        if result.event != SessionEvent::None {
+            on_event(&result.event);
+            events.push(result.event);
+        }
+        if session.state() == SessionState::Closed {
+            return Ok(events);
         }
     }
 }
