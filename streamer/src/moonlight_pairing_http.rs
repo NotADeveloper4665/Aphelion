@@ -133,7 +133,8 @@ mod tests {
     fn parses_all_pairing_stages_and_payload_hex() {
         assert_eq!(PairingEndpointRequest::parse_query("phrase=getservercert&salt=0011").unwrap(),
             PairingEndpointRequest { phrase: PairingPhrase::GetServerCert, payload: None });
-        assert_eq!(PairingEndpointRequest::parse_query("phrase=pairchallenge").unwrap().phrase, PairingPhrase::PairChallenge);\n        assert_eq!(PairingEndpointRequest::parse_query("phrase=clientchallenge&clientchallenge=00aF").unwrap().payload, Some(vec![0, 0xaf]));
+        assert_eq!(PairingEndpointRequest::parse_query("phrase=pairchallenge").unwrap().phrase, PairingPhrase::PairChallenge);
+        assert_eq!(PairingEndpointRequest::parse_query("phrase=clientchallenge&clientchallenge=00aF").unwrap().payload, Some(vec![0, 0xaf]));
         assert_eq!(PairingEndpointRequest::parse_query("?phrase=serverchallengeresp&serverchallengeresp=0102").unwrap().payload, Some(vec![1, 2]));
         assert_eq!(PairingEndpointRequest::parse_query("phrase=clientpairingsecret&clientpairingsecret=ff").unwrap().payload, Some(vec![255]));
     }
