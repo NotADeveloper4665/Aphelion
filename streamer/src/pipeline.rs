@@ -16,7 +16,7 @@ pub enum PipelineStep {
     Sent { frame_index: u32, stats: MoonlightSendStats },
 }
 
-/// Measured counters from the software video path. These values describe only this
+/// Measured counters from the software video path. Timestamps currently begin when Rust receives a complete raw frame. These values describe only this
 /// worker-local pipeline and do not imply end-to-end client latency.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct PipelineHealth {
@@ -28,9 +28,9 @@ pub struct PipelineHealth {
     pub encoder_failures: u64,
     pub send_failures: u64,
     pub last_frame_index: Option<u32>,
-    pub last_capture_age_micros: Option<u64>,
-    pub last_capture_to_send_micros: Option<u64>,
-    pub max_capture_to_send_micros: Option<u64>,
+    pub last_frame_age_micros: Option<u64>,
+    pub last_frame_received_to_send_micros: Option<u64>,
+    pub max_frame_received_to_send_micros: Option<u64>,
 }
 
 #[derive(Debug)]
@@ -65,7 +65,7 @@ pub struct SoftwareVideoPipeline<S: FrameSource> {
     submitted_frames: u64,
     next_frame_index: u32,
     health: PipelineHealth,
-    latest_capture_at: Option<Instant>,
+    latest_frame_received_at: Option<Instant>,
 }
 
 impl<S: FrameSource> SoftwareVideoPipeline<S> {
@@ -84,7 +84,7 @@ impl<S: FrameSource> SoftwareVideoPipeline<S> {
         Ok(Self {
             source, encoder, sender, stream_epoch: Instant::now(),
             submitted_frames: 0, next_frame_index: 0,
-            health: PipelineHealth::default(), latest_capture_at: None,
+            health: PipelineHealth::default(), latest_frame_received_at: None,
         })
     }
 
@@ -99,7 +99,7 @@ impl<S: FrameSource> SoftwareVideoPipeline<S> {
             }
         };
         self.health.captured_frames = self.health.captured_frames.saturating_add(1);
-        self.latest_capture_at = Some(frame.captured_at);
+        self.latest_frame_received_at = Some(frame.frame_received_at);
         if let Err(error) = self.encoder.submit(&frame) {
             self.health.encoder_failures = self.health.encoder_failures.saturating_add(1);
             return Err(PipelineError::Encoder(error));
@@ -116,11 +116,11 @@ impl<S: FrameSource> SoftwareVideoPipeline<S> {
         }
     }
 
-    /// Return a measured snapshot. Capture age is recalculated when this is called.
+    /// Return a measured snapshot. Latest frame age is recalculated when this is called.
     pub fn health(&self) -> PipelineHealth {
         let mut snapshot = self.health;
-        snapshot.last_capture_age_micros = self.latest_capture_at.map(|captured_at| {
-            duration_micros(Instant::now().saturating_duration_since(captured_at))
+        snapshot.last_frame_age_micros = self.latest_frame_received_at.map(|frame_received_at| {
+            duration_micros(Instant::now().saturating_duration_since(frame_received_at))
         });
         snapshot
     }
@@ -141,7 +141,7 @@ impl<S: FrameSource> SoftwareVideoPipeline<S> {
     }
 
     fn send(&mut self, unit: EncodedAccessUnit) -> Result<PipelineStep, PipelineError> {
-        let captured_at = unit.captured_at.ok_or(PipelineError::MissingCaptureTimestamp)?;
+        let frame_received_at = unit.frame_received_at.ok_or(PipelineError::MissingCaptureTimestamp)?;
         let frame_index = self.next_frame_index;
         let stats = match send_unit(&mut self.sender, self.stream_epoch, frame_index, unit) {
             Ok(stats) => stats,
@@ -151,14 +151,14 @@ impl<S: FrameSource> SoftwareVideoPipeline<S> {
             }
             Err(error) => return Err(error),
         };
-        let age = duration_micros(Instant::now().saturating_duration_since(captured_at));
+        let age = duration_micros(Instant::now().saturating_duration_since(frame_received_at));
         self.health.sent_frames = self.health.sent_frames.saturating_add(1);
         self.health.packets_sent = self.health.packets_sent.saturating_add(stats.packets as u64);
         self.health.bytes_sent = self.health.bytes_sent.saturating_add(stats.bytes as u64);
         self.health.last_frame_index = Some(frame_index);
-        self.health.last_capture_to_send_micros = Some(age);
-        self.health.max_capture_to_send_micros = Some(
-            self.health.max_capture_to_send_micros.unwrap_or(0).max(age)
+        self.health.last_frame_received_to_send_micros = Some(age);
+        self.health.max_frame_received_to_send_micros = Some(
+            self.health.max_frame_received_to_send_micros.unwrap_or(0).max(age)
         );
         self.next_frame_index = self.next_frame_index.wrapping_add(1);
         Ok(PipelineStep::Sent { frame_index, stats })
@@ -175,10 +175,10 @@ fn send_unit(
     frame_index: u32,
     unit: EncodedAccessUnit,
 ) -> Result<MoonlightSendStats, PipelineError> {
-    let captured_at = unit.captured_at.ok_or(PipelineError::MissingCaptureTimestamp)?;
-    let elapsed = captured_at.saturating_duration_since(stream_epoch);
+    let frame_received_at = unit.frame_received_at.ok_or(PipelineError::MissingCaptureTimestamp)?;
+    let elapsed = frame_received_at.saturating_duration_since(stream_epoch);
     let timestamp_90khz = (elapsed.as_nanos().saturating_mul(90_000) / 1_000_000_000) as u32;
-    let processing_latency = Instant::now().saturating_duration_since(captured_at);
+    let processing_latency = Instant::now().saturating_duration_since(frame_received_at);
     let latency_tenths_ms = (processing_latency.as_micros() / 100).min(u16::MAX as u128) as u16;
     let is_idr = unit.nals.iter().any(|nal| nal.first().is_some_and(|header| *header & 0x1f == 5));
     let nals: Vec<&[u8]> = unit.nals.iter().map(Vec::as_slice).collect();
@@ -212,7 +212,7 @@ mod tests {
         let source = Frames(VecDeque::from([0x20, 0x90].map(|fill| CapturedFrame {
             width: config.width,
             height: config.height,
-            captured_at: Instant::now(),
+            frame_received_at: Instant::now(),
             bgra: vec![fill; 16 * 16 * 4],
         })));
         let encoder = FfmpegH264Encoder::spawn(config).expect("CI installs FFmpeg with libx264");
@@ -229,7 +229,7 @@ mod tests {
         let health = pipeline.health();
         assert_eq!(health.captured_frames, 2);
         assert_eq!(health.sent_frames, sent_before_finish as u64);
-        assert!(health.last_capture_age_micros.is_some());
+        assert!(health.last_frame_age_micros.is_some());
         assert_eq!(health.send_failures, 0);
         let flushed = pipeline.finish().unwrap();
         assert_eq!(sent_before_finish + flushed.len(), 2);

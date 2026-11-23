@@ -42,7 +42,7 @@ impl EncoderConfig {
 pub struct EncodedAccessUnit {
     /// Annex-B start codes are omitted from each NAL unit.
     pub nals: Vec<Vec<u8>>,
-    pub captured_at: Option<Instant>,
+    pub received_at: Option<Instant>,
 }
 
 #[derive(Debug)]
@@ -137,7 +137,7 @@ impl FfmpegH264Encoder {
         if frame.width != self.config.width || frame.height != self.config.height || frame.bgra.len() != self.frame_bytes {
             return Err(EncoderError::FrameMismatch { expected: self.frame_bytes, received: frame.bgra.len() });
         }
-        self.timestamps.lock().expect("encoder timestamp queue poisoned").push_back(frame.captured_at);
+        self.timestamps.lock().expect("encoder timestamp queue poisoned").push_back(frame.received_at);
         let stdin = self.stdin.as_mut().ok_or(EncoderError::ProcessExited(None))?;
         let result = stdin.write_all(&frame.bgra).and_then(|_| stdin.flush());
         if let Err(error) = result {
@@ -224,8 +224,8 @@ fn read_access_units(mut stdout: ChildStdout, output: SyncSender<EncodedAccessUn
 }
 
 fn send_unit(output: &SyncSender<EncodedAccessUnit>, timestamps: &Mutex<VecDeque<Instant>>, nals: Vec<Vec<u8>>) -> Result<(), EncoderError> {
-    let captured_at = timestamps.lock().expect("encoder timestamp queue poisoned").pop_front();
-    output.send(EncodedAccessUnit { nals, captured_at }).map_err(|_| EncoderError::ProcessExited(None))
+    let received_at = timestamps.lock().expect("encoder timestamp queue poisoned").pop_front();
+    output.send(EncodedAccessUnit { nals, received_at }).map_err(|_| EncoderError::ProcessExited(None))
 }
 
 #[derive(Default)]
@@ -316,13 +316,13 @@ mod tests {
             encoder.submit(&CapturedFrame {
                 width: config.width,
                 height: config.height,
-                captured_at: Instant::now(),
+                received_at: Instant::now(),
                 bgra: vec![fill; 16 * 16 * 4],
             }).unwrap();
         }
         let units = encoder.finish().unwrap();
         assert_eq!(units.len(), 2);
         assert!(units.iter().all(|unit| unit.nals.iter().any(|nal| nal.first().is_some_and(|header| header & 0x1f == 9))));
-        assert!(units.iter().all(|unit| unit.captured_at.is_some()));
+        assert!(units.iter().all(|unit| unit.received_at.is_some()));
     }
 }

@@ -31,7 +31,7 @@ The current standard RTP experiment is a separate opt-in target for packetizatio
 
 ## Capture and frame ownership
 
-The first Linux desktop backend is a portal-authorized PipeWire screencast. The user selects or authorizes a source through the desktop portal. Aphelion must not bypass that permission flow by opening an arbitrary monitor node. Capture callbacks do minimal real-time work: acquire the PipeWire buffer, attach monotonic timestamp/format metadata, enqueue a bounded frame reference, and return the buffer promptly.
+The first Linux desktop backend is a portal-authorized PipeWire screencast. The user selects or authorizes a source through the desktop portal. Aphelion must not bypass that permission flow by opening an arbitrary monitor node. Capture callbacks do minimal real-time work: acquire the PipeWire buffer, attach monotonic timestamp/format metadata, enqueue a bounded frame reference, and return the buffer promptly. The current GStreamer adapter applies a two-buffer downstream-leaky queue, but its raw-pipe format drops PipeWire timestamps; health is currently measured from complete-frame receipt in Rust.
 
 Capture output must describe pixel format, width, height, plane offsets/strides, DMA-BUF or mapped-memory handles, modifier, synchronization state, timestamp clock, and release callback. A DMA-BUF FD alone does not define safe GPU import or lifetime. The first encoder adapter may use CPU-mappable frames; GPU interop is a separate measured implementation with explicit fences and destruction ordering.
 
@@ -76,7 +76,7 @@ Video is the first Rust media path. Audio and input remain on Syzygy until their
 
 ## Observability and recovery
 
-Health reports capture state/last-frame age, encoder state/encode duration, queue age/bytes/drops, packet/FEC counts, encryption failures, send errors, and per-session negotiated profile only when each field is measured. The current software pipeline now exposes measured local frame, packet, byte, failure, and capture-to-send-age counters; it is not yet forwarded through worker health IPC. Unknown values are null or explicitly unavailable. Control IPC RTT is never labeled stream latency.
+Health reports capture state/last-frame age, encoder state/encode duration, queue age/bytes/drops, packet/FEC counts, encryption failures, send errors, and per-session negotiated profile only when each field is measured. The current software pipeline now exposes measured local frame, packet, byte, failure, and frame-receipt-to-send-age counters; it is not yet forwarded through worker health IPC. Unknown values are null or explicitly unavailable. Control IPC RTT is never labeled stream latency.
 
 On worker or device failure, stop admitting work, release queued frames and GPU resources in dependency order, close session sockets, report the failed stage, and let the supervisor apply bounded restart policy. Seamless client recovery, keyframe recovery time, and stale-frame thresholds remain unclaimed until measured.
 

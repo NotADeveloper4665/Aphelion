@@ -11,6 +11,7 @@ use std::{
     time::Instant,
 };
 
+const CAPTURE_QUEUE_DEPTH: usize = 2;
 const MAX_FRAME_BYTES: usize = 256 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,7 +45,7 @@ pub struct CapturedFrame {
     pub width: u32,
     pub height: u32,
     /// Monotonic time at which this process received the complete frame.
-    pub captured_at: Instant,
+    pub received_at: Instant,
     /// BGRA8, tightly packed, row-major pixels.
     pub bgra: Vec<u8>,
 }
@@ -131,7 +132,7 @@ impl FrameSource for PipeWireCapture {
                 Err(error) => return Err(CaptureError::Read(error)),
             }
         }
-        Ok(CapturedFrame { width: self.config.width, height: self.config.height, captured_at: Instant::now(), bgra })
+        Ok(CapturedFrame { width: self.config.width, height: self.config.height, received_at: Instant::now(), bgra })
     }
 }
 
@@ -150,6 +151,12 @@ fn gstreamer_args(config: CaptureConfig) -> Vec<String> {
         "pipewiresrc".into(),
         format!("path={}", config.node_id),
         "do-timestamp=true".into(),
+        "!".into(),
+        "queue".into(),
+        format!("max-size-buffers={CAPTURE_QUEUE_DEPTH}"),
+        "max-size-bytes=0".into(),
+        "max-size-time=0".into(),
+        "leaky=downstream".into(),
         "!".into(),
         format!("video/x-raw,format=BGRA,width={},height={},framerate={}/1", config.width, config.height, config.frames_per_second),
         "!".into(),
