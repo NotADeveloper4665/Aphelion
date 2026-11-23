@@ -189,6 +189,30 @@ impl MoonlightUdpSender {
         Ok((sender, ports))
     }
 
+    /// Bind the reserved host RTP/RTCP pair to a validated Moonlight session profile.
+    /// The peer IP comes from the accepted RTSP connection; only the negotiated RTP port
+    /// is used, so an SDP-provided address cannot redirect media.
+    pub fn bind_for_session(
+        pair: ReservedUdpPortPair,
+        peer_ip: IpAddr,
+        client_ports: MediaPortPair,
+        config: MoonlightVideoConfig,
+        profile: &MoonlightStreamProfile,
+        multi_fec_supported: bool,
+        cipher: Option<MoonlightVideoCipher>,
+    ) -> Result<(Self, MediaPortPair), Box<dyn std::error::Error + Send + Sync>> {
+        let config = config.apply_session_profile(profile, multi_fec_supported)?;
+        if config.encryption_required && cipher.is_none() {
+            return Err(Box::new(MoonlightPacketError::EncryptionRequired));
+        }
+        Self::bind_reserved(
+            pair,
+            SocketAddr::new(peer_ip, client_ports.rtp()),
+            config,
+            cipher,
+        )
+    }
+
     pub fn local_addr(&self) -> io::Result<SocketAddr> { self.socket.local_addr() }
 
     pub fn send_access_unit(
@@ -463,6 +487,54 @@ mod tests {
         assert_eq!((data_info >> 22) & 0x3ff, 1);
         assert_eq!((parity_info >> 22) & 0x3ff, 1);
         assert_eq!((parity_info >> 12) & 0x3ff, 1);
+    }
+
+    #[test]
+    fn session_sender_uses_reserved_ports_and_authenticated_peer_ip() {
+        use std::net::{IpAddr, Ipv4Addr};
+        let receiver = loop {
+            let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+            let port = socket.local_addr().unwrap().port();
+            if port % 2 == 0 && port < u16::MAX { break (socket, port); }
+        };
+        receiver.0.set_read_timeout(Some(std::time::Duration::from_secs(1))).unwrap();
+        let remote_ports = MediaPortPair::new(receiver.1, receiver.1 + 1).unwrap();
+        let profile = MoonlightStreamProfile {
+            width: 1280, height: 720, frames_per_second: 60, bitrate_kbps: 10_000,
+            packet_size: 1200, codec: VideoCodec::H264, minimum_fec_packets: 0,
+            moonlight_feature_flags: 0, nvidia_feature_flags: 0,
+            encryption_flags: crate::moonlight_sdp::SS_ENC_CONTROL_V2,
+        };
+        let reserved = ReservedUdpPortPair::bind(IpAddr::V4(Ipv4Addr::LOCALHOST)).unwrap();
+        let expected_server_ports = reserved.ports();
+        let (mut sender, advertised) = MoonlightUdpSender::bind_for_session(
+            reserved, IpAddr::V4(Ipv4Addr::LOCALHOST), remote_ports,
+            MoonlightVideoConfig::default(), &profile, false, None,
+        ).unwrap();
+        assert_eq!(advertised, expected_server_ports);
+        assert_eq!(sender.local_addr().unwrap().port(), advertised.rtp());
+        sender.send_access_unit(0, 9000, true, 0, &[&[0x65, 1, 2]]).unwrap();
+        let mut packet = [0_u8; 2048];
+        let (length, source) = receiver.0.recv_from(&mut packet).unwrap();
+        assert_eq!(source.port(), advertised.rtp());
+        assert_eq!(length, 1200);
+    }
+
+    #[test]
+    fn session_sender_rejects_video_encryption_without_a_session_cipher() {
+        use std::net::{IpAddr, Ipv4Addr};
+        let reserved = ReservedUdpPortPair::bind(IpAddr::V4(Ipv4Addr::LOCALHOST)).unwrap();
+        let profile = MoonlightStreamProfile {
+            width: 1280, height: 720, frames_per_second: 60, bitrate_kbps: 10_000,
+            packet_size: 1200, codec: VideoCodec::H264, minimum_fec_packets: 0,
+            moonlight_feature_flags: 0, nvidia_feature_flags: 0,
+            encryption_flags: crate::moonlight_sdp::SS_ENC_VIDEO,
+        };
+        let result = MoonlightUdpSender::bind_for_session(
+            reserved, IpAddr::V4(Ipv4Addr::LOCALHOST), MediaPortPair::new(6000, 6001).unwrap(),
+            MoonlightVideoConfig::default(), &profile, false, None,
+        );
+        assert!(result.is_err());
     }
 
     #[test]
