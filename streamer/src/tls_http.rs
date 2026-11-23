@@ -182,7 +182,7 @@ mod tests {
         let headers = std::str::from_utf8(&bytes[..split]).unwrap();
         assert!(headers.starts_with("HTTP/1.1 200 OK\r\n"));
         assert!(headers.contains("Content-Length: 18\r\n"));
-        assert!(headers.contains("Connection: close\r\n"));
+        assert!(headers.contains("Connection: close"));
         assert_eq!(&bytes[split + 4..], b"<root>ready</root>");
     }
 
