@@ -262,7 +262,7 @@ mod tests {
 
         let mut response = Vec::new();
         stream.read_to_end(&mut response).unwrap();
-        assert!(response.starts_with(b"HTTP/1.1 200 OK\\r\\n"));
+        assert!(response.starts_with(b"HTTP/1.1 200 OK\r\n"));
         assert!(response.ends_with(b"<root><status>ready</status></root>"));
         assert_eq!(serving.join().unwrap(), address);
     }
