@@ -1,6 +1,6 @@
 # Aphelion Rust Streamer Architecture
 
-**Status:** Implementation architecture for the progressive Rust media-path replacement. The current `aphelion-streamer` crate has portal-node PipeWire/GStreamer capture plumbing, a software H.264 FFmpeg adapter, bounded RTSP/SDP parsing and a TCP connection adapter, partial UDP-port negotiation, a capture-to-encode-to-Moonlight-UDP prototype, data/parity packet framing and encryption primitives, a tested PIN-to-pairing-key derivation primitive, and bounded raw AES-128-ECB pairing block operations. Authenticated pairing/key establishment, parity differential vectors, real portal acquisition, and client compatibility remain incomplete. This document describes the target, not a completeness claim.
+**Status:** Implementation architecture for the progressive Rust media-path replacement. The current `aphelion-streamer` crate has portal-node PipeWire/GStreamer capture plumbing, a software H.264 FFmpeg adapter, bounded RTSP/SDP parsing and a TCP connection adapter, partial UDP-port negotiation, a capture-to-encode-to-Moonlight-UDP prototype, data/parity packet framing and encryption primitives, a tested PIN-to-pairing-key derivation primitive, bounded raw AES-128-ECB pairing block operations, and a four-stage host-side pairing transaction with RSA certificate/key binding and challenge-proof verification. Authenticated pairing/key establishment, parity differential vectors, real portal acquisition, and client compatibility remain incomplete. This document describes the target, not a completeness claim.
 
 ## Goals and invariants
 
@@ -58,7 +58,7 @@ Implement in independently testable stages:
 
 1. Bounded incremental RTSP framing and strict request parsing.
 2. Deterministic request/response state transitions with CSeq, session, and supported-option checks.
-3. Pairing/certificate integration and key derivation with compatibility vectors from the maintained protocol implementation. Current code has PIN-to-key derivation and raw AES-128-ECB block primitives with known-answer tests; it has no authenticated pairing state machine, certificate identity/persistence, signature verification, authorization, or derived streaming-session keys.
+3. Pairing/certificate integration and key derivation with compatibility vectors from the maintained protocol implementation. Current code has a host-side four-stage pairing transaction: it binds server certificate/private key and one pending client identity, verifies the PIN-derived AES challenge transcript and client RSA signature, and returns the client certificate only on success. HTTP/XML and TLS endpoint integration, approval UI binding, durable identity storage, HTTPS pairing confirmation, and stream/control-channel key negotiation remain open.
 4. Client negotiation with an explicit supported profile matrix; reject unsupported combinations rather than silently coercing them.
 5. UDP stream endpoint setup and association with the authenticated RTSP launch session. Current SETUP validates client RTP/RTCP ports and requires server ports reserved by the caller; it does not yet bind or associate authenticated stream/control sockets.
 
