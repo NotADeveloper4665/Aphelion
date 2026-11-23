@@ -207,6 +207,44 @@ mod tests {
     }
 
     #[test]
+    fn sends_launch_encrypted_h264_from_capture_pipeline_over_udp() {
+        let config = EncoderConfig { width: 16, height: 16, frames_per_second: 30, bitrate_kbps: 500 };
+        let source = Frames(VecDeque::from([0x30, 0xa0].map(|fill| CapturedFrame {
+            width: config.width,
+            height: config.height,
+            received_at: Instant::now(),
+            bgra: vec![fill; 16 * 16 * 4],
+        })));
+        let encoder = FfmpegH264Encoder::spawn(config).expect("CI installs FFmpeg with libx264");
+        let receiver = UdpSocket::bind("127.0.0.1:0").unwrap();
+        receiver.set_read_timeout(Some(Duration::from_millis(250))).unwrap();
+        let launch = crate::moonlight_launch::MoonlightLaunchCrypto::from_rikey_hex(&"33".repeat(16)).unwrap();
+        let video_cipher = launch.establish(false, true).unwrap().video;
+        let sender = MoonlightUdpSender::bind(
+            "127.0.0.1:0".parse().unwrap(),
+            receiver.local_addr().unwrap(),
+            MoonlightVideoConfig { encryption_required: true, ..MoonlightVideoConfig::default() },
+            video_cipher,
+        ).unwrap();
+        let mut pipeline = SoftwareVideoPipeline::new(source, encoder, sender, 16, 16, 16, 16).unwrap();
+        pipeline.pump_once().unwrap();
+        pipeline.pump_once().unwrap();
+        pipeline.finish().unwrap();
+
+        let mut encrypted_packets = Vec::new();
+        let mut packet = [0; 2048];
+        while let Ok((bytes, _)) = receiver.recv_from(&mut packet) {
+            encrypted_packets.push(packet[..bytes].to_vec());
+        }
+        assert!(!encrypted_packets.is_empty(), "the encoded video pipeline should emit UDP shards");
+        for packet in &encrypted_packets {
+            assert!(packet.len() > crate::crypto::MOONLIGHT_VIDEO_PREFIX_BYTES);
+            assert_eq!(packet[11], b'V');
+        }
+        assert_eq!(&encrypted_packets[0][..8], &0_u64.to_le_bytes());
+    }
+
+    #[test]
     fn sends_captured_encoded_h264_over_moonlight_udp_path() {
         let config = EncoderConfig { width: 16, height: 16, frames_per_second: 30, bitrate_kbps: 500 };
         let source = Frames(VecDeque::from([0x20, 0x90].map(|fill| CapturedFrame {
