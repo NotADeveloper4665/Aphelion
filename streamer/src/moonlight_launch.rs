@@ -109,6 +109,27 @@ mod tests {
     }
 
     #[test]
+    fn profile_encryption_bit_selects_video_cipher_without_enabling_control_encryption() {
+        let mut profile = MoonlightStreamProfile {
+            width: 1280, height: 720, frames_per_second: 60, bitrate_kbps: 12000,
+            packet_size: 1200, codec: crate::moonlight_sdp::VideoCodec::H264,
+            minimum_fec_packets: 0, moonlight_feature_flags: 0, nvidia_feature_flags: 0,
+            encryption_flags: 0,
+        };
+        let key = "00112233445566778899aabbccddeeff";
+        let clear_video = MoonlightLaunchCrypto::from_rikey_hex(key).unwrap()
+            .establish_for_profile(true, &profile).unwrap();
+        assert!(clear_video.rtsp.is_some());
+        assert!(clear_video.video.is_none());
+
+        profile.encryption_flags = crate::moonlight_sdp::SS_ENC_VIDEO;
+        let encrypted_video = MoonlightLaunchCrypto::from_rikey_hex(key).unwrap()
+            .establish_for_profile(false, &profile).unwrap();
+        assert!(encrypted_video.rtsp.is_none());
+        assert!(encrypted_video.video.is_some());
+    }
+
+    #[test]
     fn different_launch_keys_produce_different_video_ciphertexts() {
         let first = MoonlightLaunchCrypto::from_rikey_hex(&"11".repeat(16)).unwrap();
         let second = MoonlightLaunchCrypto::from_rikey_hex(&"22".repeat(16)).unwrap();
