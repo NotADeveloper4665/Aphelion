@@ -286,6 +286,7 @@ fn send_unit(
 #[cfg(test)]
 mod tests {
     use std::{collections::VecDeque, net::UdpSocket};
+    use aes_gcm::{aead::Aead, Aes128Gcm, KeyInit, Nonce};
 
     use crate::{
         capture::CapturedFrame,
@@ -386,6 +387,27 @@ mod tests {
         let (bytes, _) = receiver.recv_from(&mut packet).unwrap();
         assert_eq!(bytes, 1200 + crate::crypto::MOONLIGHT_VIDEO_PREFIX_BYTES);
         assert_eq!(packet[11], b'V', "negotiated video encryption must protect every sent shard");
+
+        // A minimal client-side protocol simulator opens the actual UDP datagram with
+        // the launch key, then checks the decrypted RTP/NV framing and FEC metadata.
+        let client_cipher = Aes128Gcm::new_from_slice(&[0x66; 16]).unwrap();
+        let mut sealed = packet[32..bytes].to_vec();
+        sealed.extend_from_slice(&packet[16..32]);
+        let plaintext = client_cipher.decrypt(Nonce::from_slice(&packet[..12]), sealed.as_ref()).unwrap();
+        assert_eq!(plaintext.len(), 1200);
+        assert_eq!(&plaintext[..2], &[0x90, 96]);
+        assert_eq!(plaintext[11], 0x10); // Moonlight RTP extension profile.
+        let nv_header_start = 16;
+        let fec_info = u32::from_le_bytes(
+            plaintext[nv_header_start + 12..nv_header_start + 16].try_into().unwrap(),
+        );
+        assert_eq!((fec_info >> 12) & 0x3ff, 0, "first transmitted shard is data shard zero");
+        assert!((fec_info >> 22) & 0x3ff > 0, "frame advertises at least one data shard");
+        assert!(
+            plaintext[crate::moonlight_video::MOONLIGHT_PACKET_HEADER_BYTES..]
+                .windows(4).any(|bytes| bytes == [0, 0, 0, 1]),
+            "decrypted shard must contain Annex-B H.264 payload",
+        );
     }
 
     #[test]
