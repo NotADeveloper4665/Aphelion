@@ -111,6 +111,7 @@ impl MoonlightPairingCoordinator {
     }
 
     pub fn server_certificate_der(&self) -> &[u8] { &self.server_certificate_der }
+    pub(crate) fn server_private_key_pkcs8_der(&self) -> &[u8] { &self.server_private_key_pkcs8_der }
 
     /// Begin the normal GameStream PIN flow or advance an already-approved exchange.
     pub fn handle_pair_query(&mut self, query: &str) -> Result<PairingAction, PairingCoordinatorError> {
