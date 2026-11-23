@@ -12,7 +12,7 @@ use crate::{
         ReservedUdpPortPair,
     },
     moonlight_sdp::{MoonlightStreamProfile, VideoCodec},
-    moonlight_session::MediaPortPair,
+    moonlight_session::{MediaPortPair, MediaTrack, MoonlightRtspSession},
     moonlight_launch::NegotiatedMoonlightCiphers,
     encoder::EncoderConfig,
 };
@@ -47,6 +47,7 @@ pub enum PipelineError {
     Sender(MoonlightSendError),
     MissingCaptureTimestamp,
     ConfigurationMismatch,
+    SessionNotReady(&'static str),
 }
 
 impl std::fmt::Display for PipelineError {
@@ -57,6 +58,7 @@ impl std::fmt::Display for PipelineError {
             Self::Sender(error) => write!(f, "video send failed: {error}"),
             Self::MissingCaptureTimestamp => f.write_str("encoder output has no capture timestamp"),
             Self::ConfigurationMismatch => f.write_str("capture and encoder dimensions do not match"),
+            Self::SessionNotReady(reason) => write!(f, "RTSP session is not ready for video: {reason}"),
         }
     }
 }
@@ -81,6 +83,28 @@ impl<S: FrameSource> SoftwareVideoPipeline<S> {
     /// returned reservation until the client RTP/RTCP ports are known.
     pub fn reserve_video_ports(server_bind_ip: IpAddr) -> Result<ReservedUdpPortPair, std::io::Error> {
         ReservedUdpPortPair::bind(server_bind_ip)
+    }
+
+    /// Build the Rust H.264 sender from the profile and client ports negotiated by RTSP.
+    /// Call this from the session-aware PLAY callback after verifying playback has started.
+    pub fn from_rtsp_session(
+        source: S,
+        session: &MoonlightRtspSession,
+        ciphers: NegotiatedMoonlightCiphers,
+        reserved_ports: ReservedUdpPortPair,
+        peer_ip: IpAddr,
+        multi_fec_supported: bool,
+    ) -> Result<(Self, MediaPortPair), Box<dyn std::error::Error + Send + Sync>> {
+        let profile = session.stream_profile()
+            .ok_or(PipelineError::SessionNotReady("ANNOUNCE profile is missing"))?;
+        let video_ports = session.negotiated_track_ports(MediaTrack::Video)
+            .ok_or(PipelineError::SessionNotReady("video SETUP has not completed"))?;
+        if session.state() != crate::moonlight_session::SessionState::Playing {
+            return Err(Box::new(PipelineError::SessionNotReady("PLAY has not been acknowledged")));
+        }
+        Self::from_reserved_session(
+            source, profile, ciphers, reserved_ports, peer_ip, video_ports.client, multi_fec_supported,
+        )
     }
 
     /// Build the H.264 media path after ANNOUNCE/SETUP using the exact server ports already
@@ -337,10 +361,14 @@ mod tests {
         })));
         let ciphers = MoonlightLaunchCrypto::from_rikey_hex(&"66".repeat(16)).unwrap()
             .establish_for_profile(false, &profile).unwrap();
-        let (mut pipeline, server_ports) = SoftwareVideoPipeline::from_reserved_session(
-            source, &profile, ciphers, video_reservation,
-            IpAddr::V4(Ipv4Addr::LOCALHOST), client_ports, false,
-        ).expect("RTSP-advertised reservation should create the negotiated video path");
+        let play = format!("PLAY rtsp://host/streamid=video RTSP/1.0\r\nCSeq: 3\r\nSession: stream-1\r\nContent-Length: 0\r\n\r\n");
+        let play = crate::rtsp::RtspDecoder::default().push(play.as_bytes()).unwrap()
+            .into_iter().next().expect("PLAY should decode");
+        assert_eq!(rtsp.handle(play).response.status, 200);
+        let (mut pipeline, server_ports) = SoftwareVideoPipeline::from_rtsp_session(
+            source, &rtsp, ciphers, video_reservation,
+            IpAddr::V4(Ipv4Addr::LOCALHOST), false,
+        ).expect("RTSP-negotiated session should create the Rust video path");
         assert_eq!(server_ports, advertised_video_ports);
         pipeline.pump_once().unwrap();
         pipeline.pump_once().unwrap();
