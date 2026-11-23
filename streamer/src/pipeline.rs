@@ -243,6 +243,9 @@ mod tests {
         capture::CapturedFrame,
         encoder::EncoderConfig,
         moonlight_video::MoonlightVideoConfig,
+        moonlight_sdp::{MoonlightStreamProfile, VideoCodec},
+        moonlight_session::MediaPortPair,
+        moonlight_launch::MoonlightLaunchCrypto,
     };
 
     use super::*;
@@ -253,6 +256,44 @@ mod tests {
         fn next_frame(&mut self) -> Result<CapturedFrame, CaptureError> {
             self.0.pop_front().ok_or(CaptureError::ProcessExited(Some(0)))
         }
+    }
+
+    #[test]
+    fn builds_and_sends_an_authenticated_negotiated_h264_session() {
+        use std::net::{IpAddr, Ipv4Addr};
+
+        let profile = MoonlightStreamProfile {
+            width: 16, height: 16, frames_per_second: 30, bitrate_kbps: 500,
+            packet_size: 1200, codec: VideoCodec::H264, minimum_fec_packets: 0,
+            moonlight_feature_flags: 0, nvidia_feature_flags: 0,
+            encryption_flags: crate::moonlight_sdp::SS_ENC_VIDEO,
+        };
+        let source = Frames(VecDeque::from([0x24, 0x8c].map(|fill| CapturedFrame {
+            width: 16, height: 16, received_at: Instant::now(), bgra: vec![fill; 16 * 16 * 4],
+        })));
+        let (receiver, client_rtp) = loop {
+            let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+            let port = socket.local_addr().unwrap().port();
+            if port % 2 == 0 && port < u16::MAX { break (socket, port); }
+        };
+        receiver.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        let ciphers = MoonlightLaunchCrypto::from_rikey_hex(&"66".repeat(16)).unwrap()
+            .establish_for_profile(false, &profile).unwrap();
+        let (mut pipeline, server_ports) = SoftwareVideoPipeline::from_negotiated_session(
+            source, &profile, ciphers,
+            IpAddr::V4(Ipv4Addr::LOCALHOST), IpAddr::V4(Ipv4Addr::LOCALHOST),
+            MediaPortPair::new(client_rtp, client_rtp + 1).unwrap(), false,
+        ).expect("negotiated session should create its H.264 media path");
+        assert_eq!(server_ports.rtp() % 2, 0);
+        assert_eq!(server_ports.rtcp(), server_ports.rtp() + 1);
+        pipeline.pump_once().unwrap();
+        pipeline.pump_once().unwrap();
+        pipeline.finish().unwrap();
+
+        let mut packet = [0; 1400];
+        let (bytes, _) = receiver.recv_from(&mut packet).unwrap();
+        assert_eq!(bytes, 1200);
+        assert_eq!(packet[11], b'V', "negotiated video encryption must protect every sent shard");
     }
 
     #[test]
