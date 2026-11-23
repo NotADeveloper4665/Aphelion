@@ -293,7 +293,7 @@ mod tests {
 
         let mut packet = [0; 1400];
         let (bytes, _) = receiver.recv_from(&mut packet).unwrap();
-        assert_eq!(bytes, 1200);
+        assert_eq!(bytes, 1200 + crate::crypto::MOONLIGHT_VIDEO_PREFIX_BYTES);
         assert_eq!(packet[11], b'V', "negotiated video encryption must protect every sent shard");
     }
 
