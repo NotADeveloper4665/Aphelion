@@ -91,9 +91,14 @@ impl From<PairingCipherError> for PairingError {
 /// Certificate and identity information the host may persist only after pairing succeeds.
 #[derive(Clone, PartialEq, Eq)]
 pub struct PairedClient {
-    pub client_id: String,
-    pub client_name: String,
-    pub certificate_der: Vec<u8>,
+    pub(crate) client_id: String,
+    pub(crate) client_name: String,
+    pub(crate) certificate_der: Vec<u8>,
+}
+impl PairedClient {
+    pub fn client_id(&self) -> &str { &self.client_id }
+    pub fn client_name(&self) -> &str { &self.client_name }
+    pub fn certificate_der(&self) -> &[u8] { &self.certificate_der }
 }
 
 pub struct MoonlightPairingTransaction {
