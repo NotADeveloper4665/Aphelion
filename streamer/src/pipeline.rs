@@ -304,13 +304,13 @@ mod tests {
         });
 
         let sdp = format!(
-            "v=0\\r\\na=x-nv-video[0].clientViewportWd:16\\r\\na=x-nv-video[0].clientViewportHt:16\\r\\na=x-nv-video[0].maxFPS:30\\r\\na=x-nv-video[0].packetSize:1200\\r\\na=x-nv-vqos[0].bw.maximumBitrateKbps:500\\r\\na=x-nv-vqos[0].bitStreamFormat:0\\r\\n"
+            "v=0\r\na=x-nv-video[0].clientViewportWd:16\r\na=x-nv-video[0].clientViewportHt:16\r\na=x-nv-video[0].maxFPS:30\r\na=x-nv-video[0].packetSize:1200\r\na=x-nv-vqos[0].bw.maximumBitrateKbps:500\r\na=x-nv-vqos[0].bitStreamFormat:0\r\n"
         );
         let announce_wire = format!(
-            "ANNOUNCE rtsp://host RTSP/1.0\\r\\nCSeq: 1\\r\\nContent-Type: application/sdp\\r\\nContent-Length: {}\\r\\n\\r\\n{}",
+            "ANNOUNCE rtsp://host RTSP/1.0\r\nCSeq: 1\r\nContent-Type: application/sdp\r\nContent-Length: {}\r\n\r\n{}",
             sdp.len(), sdp,
         );
-        let announce = crate::rtsp::RtspDecoder::default().push(announce_wire.as_bytes()).unwrap().remove(0);
+        let announce = crate::rtsp::RtspDecoder::default().push(announce_wire.as_bytes()).unwrap().into_iter().next().expect("ANNOUNCE should decode");
         assert_eq!(rtsp.handle(announce).response.status, 200);
         let (receiver, client_rtp) = loop {
             let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
@@ -320,10 +320,10 @@ mod tests {
         receiver.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
         let client_ports = MediaPortPair::new(client_rtp, client_rtp + 1).unwrap();
         let setup_wire = format!(
-            "SETUP rtsp://host/streamid=video RTSP/1.0\\r\\nCSeq: 2\\r\\nTransport: RTP/AVP/UDP;unicast;client_port={}-{}\\r\\nContent-Length: 0\\r\\n\\r\\n",
+            "SETUP rtsp://host/streamid=video RTSP/1.0\r\nCSeq: 2\r\nTransport: RTP/AVP/UDP;unicast;client_port={}-{}\r\nContent-Length: 0\r\n\r\n",
             client_ports.rtp(), client_ports.rtcp(),
         );
-        let setup = crate::rtsp::RtspDecoder::default().push(setup_wire.as_bytes()).unwrap().remove(0);
+        let setup = crate::rtsp::RtspDecoder::default().push(setup_wire.as_bytes()).unwrap().into_iter().next().expect("SETUP should decode");
         let setup_result = rtsp.handle(setup);
         assert_eq!(setup_result.response.status, 200);
         let transport = &setup_result.response.headers.iter().find(|(name, _)| name == "Transport").unwrap().1;
