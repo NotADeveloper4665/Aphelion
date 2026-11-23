@@ -302,8 +302,17 @@ mod tests {
             };
             let mut session = MoonlightRtspSession::with_media_ports("session-id", ports);
             let mut callbacks = Vec::new();
-            let result = serve_rtsp_connection(&mut stream, &mut session, |event| callbacks.push(event.clone()));
-            (result.unwrap(), callbacks, session.state())
+            let mut media_ready_at_play = false;
+            let result = serve_rtsp_connection_with_session_callback(
+                &mut stream, &mut session, |event, session| {
+                    callbacks.push(event.clone());
+                    if *event == SessionEvent::PlaybackStarted {
+                        media_ready_at_play = session.stream_profile().is_some()
+                            && session.negotiated_track_ports(crate::moonlight_session::MediaTrack::Video).is_some();
+                    }
+                },
+            );
+            (result.unwrap(), callbacks, session.state(), media_ready_at_play)
         });
 
         let mut client = TcpStream::connect(address).unwrap();
@@ -330,8 +339,9 @@ mod tests {
         client.write_all(teardown.as_bytes()).unwrap();
         assert!(read_response(&mut client).contains("CSeq: 5"));
 
-        let (events, callbacks, state) = server.join().unwrap();
+        let (events, callbacks, state, media_ready_at_play) = server.join().unwrap();
         assert_eq!(events, callbacks);
+        assert!(media_ready_at_play, "PLAY callback must see negotiated profile and video ports");
         assert_eq!(events, vec![SessionEvent::Announced, SessionEvent::TrackConfigured(crate::moonlight_session::MediaTrack::Video), SessionEvent::PlaybackStarted, SessionEvent::Teardown]);
         assert_eq!(state, SessionState::Closed);
     }
