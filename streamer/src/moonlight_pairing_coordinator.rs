@@ -99,10 +99,12 @@ pub struct MoonlightPairingCoordinator {
 impl MoonlightPairingCoordinator {
     pub fn open(store: MoonlightPairingStore) -> Result<Self, PairingCoordinatorError> {
         let identity = store.load_server_identity()?.ok_or(PairingCoordinatorError::MissingServerIdentity)?;
+        let server_private_key_pkcs8_der = Zeroizing::new(identity.private_key_pkcs8_der().to_vec());
+        let server_certificate_der = identity.certificate_der;
         Ok(Self {
             store,
-            server_certificate_der: identity.certificate_der,
-            server_private_key_pkcs8_der: Zeroizing::new(identity.private_key_pkcs8_der().to_vec()),
+            server_certificate_der,
+            server_private_key_pkcs8_der,
             pending: HashMap::new(),
             active: HashMap::new(),
         })
