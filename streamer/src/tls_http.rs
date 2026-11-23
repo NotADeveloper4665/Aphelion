@@ -89,7 +89,9 @@ impl std::fmt::Display for TlsHttpError {
     }
 }
 impl std::error::Error for TlsHttpError {}
-impl From<io::Error> for TlsHttpError {\n    fn from(error: io::Error) -> Self { Self::Io(error) }\n}
+impl From<io::Error> for TlsHttpError {
+    fn from(error: io::Error) -> Self { Self::Io(error) }
+}
 
 /// Build a server TLS config from the host's persisted DER certificate and PKCS#8 key.
 pub fn server_tls_config(
