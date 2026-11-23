@@ -50,7 +50,7 @@ impl MoonlightLaunchCrypto {
 
     /// Create only the ciphers enabled by launch negotiation, each scoped to this key.
     pub fn establish(
-        &self,
+        self,
         encrypted_rtsp: bool,
         encrypted_video: bool,
     ) -> Result<NegotiatedMoonlightCiphers, LaunchCryptoError> {
@@ -84,7 +84,8 @@ mod tests {
         let plain = launch.establish(false, false).unwrap();
         assert!(plain.rtsp.is_none());
         assert!(plain.video.is_none());
-        let encrypted = launch.establish(true, true).unwrap();
+        let encrypted = MoonlightLaunchCrypto::from_rikey_hex("00112233445566778899aAbBcCdDeEfF")
+            .unwrap().establish(true, true).unwrap();
         assert!(encrypted.rtsp.is_some());
         assert!(encrypted.video.is_some());
     }
