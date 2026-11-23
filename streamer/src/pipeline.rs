@@ -92,16 +92,11 @@ impl<S: FrameSource> SoftwareVideoPipeline<S> {
             return Err(Box::new(crate::moonlight_video::MoonlightPacketError::UnsupportedCodec));
         }
         let reserved_ports = ReservedUdpPortPair::bind(server_bind_ip)?;
-        let encoder = FfmpegH264Encoder::spawn(EncoderConfig {
-            width: profile.width,
-            height: profile.height,
-            frames_per_second: profile.frames_per_second,
-            bitrate_kbps: profile.bitrate_kbps,
-        })?;
         let video_config = MoonlightVideoConfig {
             shard_size: profile.packet_size as usize,
             ..MoonlightVideoConfig::default()
         };
+        // Validate negotiated encryption, FEC, and port ownership before spawning FFmpeg.
         let (sender, advertised_ports) = MoonlightUdpSender::bind_for_session(
             reserved_ports,
             peer_ip,
@@ -111,6 +106,12 @@ impl<S: FrameSource> SoftwareVideoPipeline<S> {
             multi_fec_supported,
             ciphers.video,
         )?;
+        let encoder = FfmpegH264Encoder::spawn(EncoderConfig {
+            width: profile.width,
+            height: profile.height,
+            frames_per_second: profile.frames_per_second,
+            bitrate_kbps: profile.bitrate_kbps,
+        })?;
         let pipeline = Self::new(
             source, encoder, sender,
             profile.width, profile.height, profile.width, profile.height,
