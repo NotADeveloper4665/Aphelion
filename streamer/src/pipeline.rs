@@ -316,7 +316,7 @@ mod tests {
             source, &profile, ciphers,
             IpAddr::V4(Ipv4Addr::LOCALHOST), IpAddr::V4(Ipv4Addr::LOCALHOST),
             MediaPortPair::new(47998, 47999).unwrap(), false,
-        ).unwrap_err();
+        ).err().expect("required video encryption must fail closed");
         assert!(error.to_string().contains("requires an established video cipher"));
     }
 
