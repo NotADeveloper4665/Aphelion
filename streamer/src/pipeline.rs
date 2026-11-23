@@ -2,12 +2,19 @@
 //! sender. The caller must complete client authentication/session negotiation first and
 //! supply the negotiated peer, cipher, and client capabilities.
 
-use std::time::{Duration, Instant};
+use std::{net::IpAddr, time::{Duration, Instant}};
 
 use crate::{
     capture::{CaptureError, FrameSource},
     encoder::{EncodedAccessUnit, EncoderError, FfmpegH264Encoder},
-    moonlight_video::{MoonlightSendError, MoonlightSendStats, MoonlightUdpSender},
+    moonlight_video::{
+        MoonlightSendError, MoonlightSendStats, MoonlightUdpSender, MoonlightVideoConfig,
+        ReservedUdpPortPair,
+    },
+    moonlight_sdp::{MoonlightStreamProfile, VideoCodec},
+    moonlight_session::MediaPortPair,
+    moonlight_launch::NegotiatedMoonlightCiphers,
+    encoder::EncoderConfig,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -69,6 +76,48 @@ pub struct SoftwareVideoPipeline<S: FrameSource> {
 }
 
 impl<S: FrameSource> SoftwareVideoPipeline<S> {
+    /// Build the H.264 media path from a completed authenticated and negotiated session.
+    /// The caller must derive ciphers from that session's validated launch key and
+    /// reserve the RTP/RTCP pair before advertising it in RTSP SETUP.
+    pub fn from_negotiated_session(
+        source: S,
+        profile: &MoonlightStreamProfile,
+        ciphers: NegotiatedMoonlightCiphers,
+        server_bind_ip: IpAddr,
+        peer_ip: IpAddr,
+        client_video_ports: MediaPortPair,
+        multi_fec_supported: bool,
+    ) -> Result<(Self, MediaPortPair), Box<dyn std::error::Error + Send + Sync>> {
+        if profile.codec != VideoCodec::H264 {
+            return Err(Box::new(crate::moonlight_video::MoonlightPacketError::UnsupportedCodec));
+        }
+        let reserved_ports = ReservedUdpPortPair::bind(server_bind_ip)?;
+        let encoder = FfmpegH264Encoder::spawn(EncoderConfig {
+            width: profile.width,
+            height: profile.height,
+            frames_per_second: profile.frames_per_second,
+            bitrate_kbps: profile.bitrate_kbps,
+        })?;
+        let video_config = MoonlightVideoConfig {
+            shard_size: profile.packet_size as usize,
+            ..MoonlightVideoConfig::default()
+        };
+        let (sender, advertised_ports) = MoonlightUdpSender::bind_for_session(
+            reserved_ports,
+            peer_ip,
+            client_video_ports,
+            video_config,
+            profile,
+            multi_fec_supported,
+            ciphers.video,
+        )?;
+        let pipeline = Self::new(
+            source, encoder, sender,
+            profile.width, profile.height, profile.width, profile.height,
+        )?;
+        Ok((pipeline, advertised_ports))
+    }
+
     pub fn new(
         source: S,
         encoder: FfmpegH264Encoder,
