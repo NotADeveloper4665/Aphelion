@@ -254,6 +254,11 @@ mod tests {
         let response = decrypt_host_record(&key, &read_encrypted_response(&mut client));
         let response = String::from_utf8(response).unwrap();
         assert!(response.starts_with("RTSP/1.0 200 OK\r\nCSeq: 1\r\n"));
+        // A client may retry after losing the first response. Give the replay a fresh
+        // encryption sequence while preserving the RTSP request identity.
+        client.write_all(&client_encrypted_record(&key, 2, &plaintext)).unwrap();
+        let replay = decrypt_host_record(&key, &read_encrypted_response(&mut client));
+        assert_eq!(replay, response.as_bytes());
         drop(client);
 
         let (events, callbacks, state) = server.join().unwrap();
