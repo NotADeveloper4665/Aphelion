@@ -10,11 +10,18 @@ use std::{
 };
 use rustls::{
     pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer},
-    server::ServerConfig,
+    crypto::{self, WebPkiSupportedAlgorithms},
+    pki_types::UnixTime,
+    server::{danger::{ClientCertVerified, ClientCertVerifier}, NoServerSessionStorage, ServerConfig},
+    CertificateError, DigitallySignedStruct, DistinguishedName, SignatureScheme,
     ServerConnection, StreamOwned,
 };
 
-use crate::http::{HttpError, HttpRequest, HttpRequestDecoder};
+use crate::{
+    http::{HttpError, HttpRequest, HttpRequestDecoder},
+    moonlight_pairing::PairedClient,
+    moonlight_pairing_store::MoonlightPairingStore,
+};
 
 const HTTP_SOCKET_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_RESPONSE_BYTES: usize = 64 * 1024;
@@ -74,6 +81,7 @@ pub enum TlsHttpError {
     Io(io::Error),
     Tls(rustls::Error),
     Request(HttpError),
+    ClientAuthorization(rustls::Error),
     TruncatedRequest,
     Response(HttpResponseError),
 }
@@ -82,6 +90,7 @@ impl std::fmt::Display for TlsHttpError {
         match self {
             Self::Io(error) => write!(f, "HTTPS listener I/O failed: {error}"),
             Self::Tls(error) => write!(f, "HTTPS TLS handshake failed: {error}"),
+            Self::ClientAuthorization(error) => write!(f, "HTTPS client authorization failed: {error}"),
             Self::Request(error) => write!(f, "invalid GameStream HTTP request: {error}"),
             Self::TruncatedRequest => f.write_str("HTTPS peer disconnected before completing its request"),
             Self::Response(error) => write!(f, "cannot encode HTTPS response: {error}"),
@@ -106,6 +115,127 @@ pub fn server_tls_config(
     Ok(Arc::new(config))
 }
 
+/// HTTPS boundary for routes that require pairing. The handler runs only after
+/// TLS proves possession of the private key for a currently paired certificate.
+pub struct PairedTlsHttpListener {
+    listener: TlsHttpListener,
+    clients: Arc<PairedClientVerifier>,
+}
+
+impl PairedTlsHttpListener {
+    pub fn bind(
+        address: impl ToSocketAddrs,
+        certificate_der: &[u8],
+        private_key_pkcs8_der: &[u8],
+        store: MoonlightPairingStore,
+    ) -> Result<Self, TlsHttpError> {
+        let provider = Arc::new(crypto::ring::default_provider());
+        let clients = Arc::new(PairedClientVerifier {
+            store,
+            algorithms: provider.signature_verification_algorithms,
+        });
+        let cert = CertificateDer::from(certificate_der.to_vec());
+        let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(private_key_pkcs8_der.to_vec()));
+        let mut config = ServerConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()
+            .map_err(TlsHttpError::Tls)?
+            .with_client_cert_verifier(clients.clone())
+            .with_single_cert(vec![cert], key)
+            .map_err(TlsHttpError::Tls)?;
+        // Require fresh proof and a current pairing record on every connection.
+        config.session_storage = Arc::new(NoServerSessionStorage {});
+        config.send_tls13_tickets = 0;
+        let listener = TlsHttpListener {
+            listener: TcpListener::bind(address)?,
+            config: Arc::new(config),
+        };
+        Ok(Self { listener, clients })
+    }
+
+    pub fn local_addr(&self) -> io::Result<SocketAddr> {
+        self.listener.local_addr()
+    }
+
+    pub fn serve_once(
+        &self,
+        handler: impl FnOnce(HttpRequest, PairedClient, SocketAddr) -> HttpResponse,
+    ) -> Result<SocketAddr, TlsHttpError> {
+        self.listener.serve(|request, connection, peer| {
+            let leaf = connection
+                .peer_certificates()
+                .and_then(|chain| chain.first())
+                .ok_or(rustls::Error::NoCertificatesPresented)
+                .map_err(TlsHttpError::ClientAuthorization)?;
+            let client = self.clients.lookup(leaf).map_err(TlsHttpError::ClientAuthorization)?;
+            Ok(handler(request, client, peer))
+        })
+    }
+}
+
+struct PairedClientVerifier {
+    store: MoonlightPairingStore,
+    algorithms: WebPkiSupportedAlgorithms,
+}
+
+impl std::fmt::Debug for PairedClientVerifier {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("PairedClientVerifier").finish_non_exhaustive()
+    }
+}
+
+impl PairedClientVerifier {
+    fn lookup(&self, certificate: &CertificateDer<'_>) -> Result<PairedClient, rustls::Error> {
+        let clients = self.store.load_clients().map_err(|error| {
+            rustls::Error::General(format!("cannot read paired client records: {error}"))
+        })?;
+        let mut matches = clients.into_iter().filter(|client| client.certificate_der() == certificate.as_ref());
+        let client = matches.next().ok_or(CertificateError::UnknownIssuer)?;
+        if matches.next().is_some() {
+            return Err(rustls::Error::General("client certificate has multiple pairing records".into()));
+        }
+        Ok(client)
+    }
+}
+
+impl ClientCertVerifier for PairedClientVerifier {
+    fn root_hint_subjects(&self) -> &[DistinguishedName] {
+        // Paired leaves are pinned directly and need no CA issuer hint.
+        &[]
+    }
+
+    fn verify_client_cert(
+        &self,
+        end_entity: &CertificateDer<'_>,
+        _intermediates: &[CertificateDer<'_>],
+        _now: UnixTime,
+    ) -> Result<ClientCertVerified, rustls::Error> {
+        self.lookup(end_entity)?;
+        Ok(ClientCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        certificate: &CertificateDer<'_>,
+        signature: &DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        crypto::verify_tls12_signature(message, certificate, signature, &self.algorithms)
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        certificate: &CertificateDer<'_>,
+        signature: &DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        crypto::verify_tls13_signature(message, certificate, signature, &self.algorithms)
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        self.algorithms.supported_schemes()
+    }
+}
+
 pub struct TlsHttpListener {
     listener: TcpListener,
     config: Arc<ServerConfig>,
@@ -128,7 +258,14 @@ impl TlsHttpListener {
         &self,
         handler: impl FnOnce(HttpRequest) -> HttpResponse,
     ) -> Result<SocketAddr, TlsHttpError> {
-        let (mut socket, peer) = self.listener.accept()?;
+        self.serve(|request, _, _| Ok(handler(request)))
+    }
+
+    fn serve(
+        &self,
+        handler: impl FnOnce(HttpRequest, &ServerConnection, SocketAddr) -> Result<HttpResponse, TlsHttpError>,
+    ) -> Result<SocketAddr, TlsHttpError> {
+        let (socket, peer) = self.listener.accept()?;
         socket.set_read_timeout(Some(HTTP_SOCKET_TIMEOUT))?;
         socket.set_write_timeout(Some(HTTP_SOCKET_TIMEOUT))?;
         let connection = ServerConnection::new(self.config.clone()).map_err(TlsHttpError::Tls)?;
@@ -142,7 +279,7 @@ impl TlsHttpListener {
                 break request;
             }
         };
-        let response = handler(request);
+        let response = handler(request, &stream.conn, peer)?;
         let encoded = response.encode().map_err(TlsHttpError::Response)?;
         stream.write_all(&encoded).map_err(map_io)?;
         stream.flush().map_err(map_io)?;
@@ -267,6 +404,84 @@ mod tests {
         let peer = serving.join().unwrap();
         assert!(peer.ip().is_loopback());
         assert_ne!(peer.port(), 0);
+    }
+
+    #[test]
+    fn paired_tls_requires_a_current_certificate_and_reports_the_stored_identity() {
+        use rustls::{pki_types::ServerName, ClientConfig, ClientConnection};
+        use std::{fs, thread};
+
+        const CLIENT_CERT: &[u8] = include_bytes!("../tests/fixtures/client-cert.der");
+        let root = std::env::temp_dir().join(format!("aphelion-paired-tls-{:016x}", rand::random::<u64>()));
+        fs::create_dir(&root).unwrap();
+        struct TestDir(std::path::PathBuf);
+        impl Drop for TestDir {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+        let dir = TestDir(root);
+        let store = MoonlightPairingStore::open(&dir.0).unwrap();
+        store.authorize_client(&PairedClient {
+            client_id: "stored-id".into(),
+            client_name: "paired phone".into(),
+            certificate_der: CLIENT_CERT.to_vec(),
+        }).unwrap();
+        let listener = Arc::new(PairedTlsHttpListener::bind(
+            "127.0.0.1:0", SERVER_CERT, SERVER_KEY, MoonlightPairingStore::open(&dir.0).unwrap(),
+        ).unwrap());
+
+        for version in [&rustls::version::TLS12, &rustls::version::TLS13] {
+            for (identity, allowed) in [
+                (Some((CLIENT_CERT, CLIENT_KEY)), true),
+                (Some((SERVER_CERT, SERVER_KEY)), false),
+                (None, false),
+            ] {
+                exchange(&listener, version, identity, allowed);
+            }
+        }
+        assert!(store.remove_client("stored-id").unwrap());
+        exchange(&listener, &rustls::version::TLS13, Some((CLIENT_CERT, CLIENT_KEY)), false);
+
+        fn exchange(
+            listener: &Arc<PairedTlsHttpListener>,
+            version: &'static rustls::SupportedProtocolVersion,
+            identity: Option<(&[u8], &[u8])>,
+            allowed: bool,
+        ) {
+            let builder = ClientConfig::builder_with_protocol_versions(&[version])
+                .dangerous()
+                .with_custom_certificate_verifier(Arc::new(TestServerCertVerifier));
+            let config = match identity {
+                Some((cert, key)) => builder.with_client_auth_cert(
+                    vec![CertificateDer::from(cert.to_vec())],
+                    PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key.to_vec())),
+                ).unwrap(),
+                None => builder.with_no_client_auth(),
+            };
+
+            let socket = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+            let local_addr = socket.local_addr().unwrap();
+            socket.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+            let listener = listener.clone();
+            let serving = thread::spawn(move || listener.serve_once(|request, client, peer| {
+                assert!(allowed, "unauthorized request reached the application");
+                assert_eq!(client.client_id(), "stored-id");
+                assert_eq!(client.client_name(), "paired phone");
+                assert_eq!(peer, local_addr);
+                assert_eq!(request.path, "/launch");
+                HttpResponse::xml(HttpStatus::Ok, "<root/>")
+            }));
+
+            let name = ServerName::try_from("localhost").unwrap();
+            let mut stream = StreamOwned::new(ClientConnection::new(Arc::new(config), name).unwrap(), socket);
+            let mut response = Vec::new();
+            let result = stream.write_all(b"GET /launch?uniqueid=claimed-id HTTP/1.1\r\nHost: localhost\r\n\r\n")
+                .and_then(|_| stream.read_to_end(&mut response));
+            assert_eq!(serving.join().unwrap().is_ok(), allowed);
+            assert_eq!(result.is_ok(), allowed);
+            assert_eq!(response.starts_with(b"HTTP/1.1 200 OK\r\n"), allowed);
+        }
     }
 
     #[test]
